@@ -1,0 +1,2461 @@
+const { validationResult } = require('express-validator');
+const Income = require('../models/income.model');
+const Expense = require('../models/expense.model');
+const FinanceCategory = require('../models/financeCategory.model');
+const Invoice = require('../models/invoice.model');
+const SavedInvoiceContent = require('../models/savedInvoiceContent.model');
+const Account = require('../models/account.model');
+const Ledger = require('../models/ledger.model');
+const Payment = require('../models/payment.model');
+
+const handleValidation = (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    res.status(422).json({ success: false, errors: errors.array() });
+    return true;
+  }
+  return false;
+};
+
+// Get or create the "Payments" income category for a college
+const getOrCreatePaymentsCategory = async (collegeId, userId) => {
+  let category = await FinanceCategory.findOne({
+    college: collegeId,
+    name: /^Payments$/i,
+    $or: [{ type: 'income' }, { type: 'both' }]
+  });
+  if (!category) {
+    category = await FinanceCategory.create({
+      name: 'Payments',
+      type: 'income',
+      description: 'Income from payments',
+      college: collegeId,
+      createdBy: userId
+    });
+  }
+  return category;
+};
+
+// CATEGORY CRUD
+const getCategories = async (req, res, next) => {
+  try {
+    const filters = {};
+    if (req.user.college) {
+      filters.college = req.user.college;
+    }
+    if (req.query.type) {
+      filters.type = req.query.type;
+    }
+    if (req.query.isActive !== undefined) {
+      filters.isActive = req.query.isActive === 'true';
+    }
+
+    const categories = await FinanceCategory.find(filters)
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email')
+      .sort({ name: 1 });
+
+    res.json({ success: true, data: categories });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getCategoryById = async (req, res, next) => {
+  try {
+    const category = await FinanceCategory.findById(req.params.id)
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    if (!category) {
+      return res.status(404).json({ success: false, message: 'Category not found' });
+    }
+
+    res.json({ success: true, data: category });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const createCategory = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const data = {
+      ...req.body,
+      college: req.body.college || req.user.college,
+      createdBy: req.user._id
+    };
+
+    const category = await FinanceCategory.create(data);
+    const populated = await FinanceCategory.findById(category._id)
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.status(201).json({ success: true, data: populated });
+  } catch (error) {
+    if (error.code === 11000) {
+      res.status(409).json({
+        success: false,
+        message: 'Category with this name and type already exists for this college'
+      });
+    } else {
+      next(error);
+    }
+  }
+};
+
+const updateCategory = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const category = await FinanceCategory.findById(req.params.id);
+    if (!category) {
+      return res.status(404).json({ success: false, message: 'Category not found' });
+    }
+
+    const updatableFields = ['name', 'type', 'description', 'isActive'];
+    updatableFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        category[field] = req.body[field];
+      }
+    });
+
+    category.updatedBy = req.user._id;
+    await category.save();
+
+    const updated = await FinanceCategory.findById(category._id)
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    if (error.code === 11000) {
+      res.status(409).json({
+        success: false,
+        message: 'Category with this name and type already exists for this college'
+      });
+    } else {
+      next(error);
+    }
+  }
+};
+
+const deleteCategory = async (req, res, next) => {
+  try {
+    const category = await FinanceCategory.findByIdAndDelete(req.params.id);
+    if (!category) {
+      return res.status(404).json({ success: false, message: 'Category not found' });
+    }
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// INCOME CRUD
+const getIncomes = async (req, res, next) => {
+  try {
+    const filters = {};
+    const query = req.query;
+
+    if (req.user.college) {
+      filters.college = req.user.college;
+    }
+    if (query.categoryId) {
+      filters.category = query.categoryId;
+    }
+    if (query.accountId) {
+      filters.account = query.accountId;
+    }
+    if (query.studentId) {
+      filters.student = query.studentId;
+    }
+    if (query.isCancelled !== undefined) {
+      filters.isCancelled = query.isCancelled === 'true';
+    }
+    if (query.startDate || query.endDate) {
+      filters.date = {};
+      if (query.startDate) {
+        filters.date.$gte = new Date(query.startDate);
+      }
+      if (query.endDate) {
+        filters.date.$lte = new Date(query.endDate);
+      }
+    }
+
+    const page = parseInt(query.page, 10) || 1;
+    const limit = parseInt(query.limit, 10) || 20;
+    const skip = (page - 1) * limit;
+
+    const sortBy = query.sortBy || 'date';
+    const sortOrder = query.sortOrder === 'asc' ? 1 : -1;
+    const sort = { [sortBy]: sortOrder };
+
+    const incomes = await Income.find(filters)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('student', 'name studentId')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email')
+      .sort(sort)
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Income.countDocuments(filters);
+
+    res.json({
+      success: true,
+      data: incomes,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getIncomeById = async (req, res, next) => {
+  try {
+    const income = await Income.findById(req.params.id)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('student', 'name studentId')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    if (!income) {
+      return res.status(404).json({ success: false, message: 'Income record not found' });
+    }
+
+    res.json({ success: true, data: income });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const createIncome = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const category = await FinanceCategory.findById(req.body.category);
+    if (!category || (category.type !== 'income' && category.type !== 'both')) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Invalid category for income transaction' });
+    }
+
+    // Validate account exists
+    const account = await Account.findById(req.body.account);
+    if (!account) {
+      return res.status(404).json({ success: false, message: 'Account not found' });
+    }
+
+    const data = {
+      ...req.body,
+      college: req.body.college || req.user.college,
+      createdBy: req.user._id
+    };
+
+    const income = await Income.create(data);
+    const populated = await Income.findById(income._id)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('student', 'name studentId')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.status(201).json({ success: true, data: populated });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateIncome = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const income = await Income.findById(req.params.id);
+    if (!income) {
+      return res.status(404).json({ success: false, message: 'Income record not found' });
+    }
+
+    if (req.body.category) {
+      const category = await FinanceCategory.findById(req.body.category);
+      if (!category || (category.type !== 'income' && category.type !== 'both')) {
+        return res
+          .status(400)
+          .json({ success: false, message: 'Invalid category for income transaction' });
+      }
+    }
+
+    // Validate account if being updated
+    if (req.body.account) {
+      const account = await Account.findById(req.body.account);
+      if (!account) {
+        return res.status(404).json({ success: false, message: 'Account not found' });
+      }
+    }
+
+    const updatableFields = [
+      'title',
+      'amount',
+      'date',
+      'category',
+      'account',
+      'student',
+      'college',
+      'referenceNumber',
+      'notes',
+      'isCancelled'
+    ];
+
+    updatableFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        income[field] = req.body[field];
+      }
+    });
+
+    income.updatedBy = req.user._id;
+    await income.save();
+
+    const updated = await Income.findById(income._id)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('student', 'name studentId')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const deleteIncome = async (req, res, next) => {
+  try {
+    const income = await Income.findByIdAndDelete(req.params.id);
+    if (!income) {
+      return res.status(404).json({ success: false, message: 'Income record not found' });
+    }
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// EXPENSE CRUD
+const getExpenses = async (req, res, next) => {
+  try {
+    const filters = {};
+    const query = req.query;
+
+    if (req.user.college) {
+      filters.college = req.user.college;
+    }
+    if (query.categoryId) {
+      filters.category = query.categoryId;
+    }
+    if (query.accountId) {
+      filters.account = query.accountId;
+    }
+    if (query.vendor) {
+      filters.vendor = { $regex: query.vendor, $options: 'i' };
+    }
+    if (query.isCancelled !== undefined) {
+      filters.isCancelled = query.isCancelled === 'true';
+    }
+    if (query.startDate || query.endDate) {
+      filters.date = {};
+      if (query.startDate) {
+        filters.date.$gte = new Date(query.startDate);
+      }
+      if (query.endDate) {
+        filters.date.$lte = new Date(query.endDate);
+      }
+    }
+
+    const page = parseInt(query.page, 10) || 1;
+    const limit = parseInt(query.limit, 10) || 20;
+    const skip = (page - 1) * limit;
+
+    const sortBy = query.sortBy || 'date';
+    const sortOrder = query.sortOrder === 'asc' ? 1 : -1;
+    const sort = { [sortBy]: sortOrder };
+
+    const expenses = await Expense.find(filters)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email')
+      .sort(sort)
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Expense.countDocuments(filters);
+
+    res.json({
+      success: true,
+      data: expenses,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getExpenseById = async (req, res, next) => {
+  try {
+    const expense = await Expense.findById(req.params.id)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    if (!expense) {
+      return res.status(404).json({ success: false, message: 'Expense record not found' });
+    }
+
+    res.json({ success: true, data: expense });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const createExpense = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const category = await FinanceCategory.findById(req.body.category);
+    if (!category || (category.type !== 'expense' && category.type !== 'both')) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Invalid category for expense transaction' });
+    }
+
+    // Validate account exists
+    const account = await Account.findById(req.body.account);
+    if (!account) {
+      return res.status(404).json({ success: false, message: 'Account not found' });
+    }
+
+    const data = {
+      ...req.body,
+      college: req.body.college || req.user.college,
+      createdBy: req.user._id
+    };
+
+    const expense = await Expense.create(data);
+    const populated = await Expense.findById(expense._id)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.status(201).json({ success: true, data: populated });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateExpense = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const expense = await Expense.findById(req.params.id);
+    if (!expense) {
+      return res.status(404).json({ success: false, message: 'Expense record not found' });
+    }
+
+    if (req.body.category) {
+      const category = await FinanceCategory.findById(req.body.category);
+      if (!category || (category.type !== 'expense' && category.type !== 'both')) {
+        return res
+          .status(400)
+          .json({ success: false, message: 'Invalid category for expense transaction' });
+      }
+    }
+
+    // Validate account if being updated
+    if (req.body.account) {
+      const account = await Account.findById(req.body.account);
+      if (!account) {
+        return res.status(404).json({ success: false, message: 'Account not found' });
+      }
+    }
+
+    const updatableFields = [
+      'title',
+      'amount',
+      'date',
+      'category',
+      'account',
+      'vendor',
+      'college',
+      'referenceNumber',
+      'notes',
+      'isCancelled'
+    ];
+
+    updatableFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        expense[field] = req.body[field];
+      }
+    });
+
+    expense.updatedBy = req.user._id;
+    await expense.save();
+
+    const updated = await Expense.findById(expense._id)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const deleteExpense = async (req, res, next) => {
+  try {
+    const expense = await Expense.findByIdAndDelete(req.params.id);
+    if (!expense) {
+      return res.status(404).json({ success: false, message: 'Expense record not found' });
+    }
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// SUMMARY
+const getFinanceSummary = async (req, res, next) => {
+  try {
+    const query = req.query;
+    const baseIncomeMatch = {};
+    const baseExpenseMatch = {};
+
+    if (req.user.college) {
+      baseIncomeMatch.college = req.user.college;
+      baseExpenseMatch.college = req.user.college;
+    }
+
+    if (query.startDate || query.endDate) {
+      const dateFilter = {};
+      if (query.startDate) {
+        dateFilter.$gte = new Date(query.startDate);
+      }
+      if (query.endDate) {
+        dateFilter.$lte = new Date(query.endDate);
+      }
+      baseIncomeMatch.date = dateFilter;
+      baseExpenseMatch.date = dateFilter;
+    }
+
+    const [incomeAgg, expenseAgg, incomeByCategory, expenseByCategory] = await Promise.all([
+      Income.aggregate([
+        { $match: baseIncomeMatch },
+        { $group: { _id: null, totalAmount: { $sum: '$amount' }, count: { $sum: 1 } } }
+      ]),
+      Expense.aggregate([
+        { $match: baseExpenseMatch },
+        { $group: { _id: null, totalAmount: { $sum: '$amount' }, count: { $sum: 1 } } }
+      ]),
+      Income.aggregate([
+        { $match: baseIncomeMatch },
+        {
+          $group: {
+            _id: '$category',
+            totalAmount: { $sum: '$amount' },
+            count: { $sum: 1 }
+          }
+        }
+      ]),
+      Expense.aggregate([
+        { $match: baseExpenseMatch },
+        {
+          $group: {
+            _id: '$category',
+            totalAmount: { $sum: '$amount' },
+            count: { $sum: 1 }
+          }
+        }
+      ])
+    ]);
+
+    const totalIncome = incomeAgg[0]?.totalAmount || 0;
+    const totalIncomeCount = incomeAgg[0]?.count || 0;
+    const totalExpense = expenseAgg[0]?.totalAmount || 0;
+    const totalExpenseCount = expenseAgg[0]?.count || 0;
+
+    const categoryIds = [
+      ...new Set([...incomeByCategory.map((i) => i._id?.toString()), ...expenseByCategory.map((e) => e._id?.toString())])
+    ].filter(Boolean);
+
+    const categories = await FinanceCategory.find({ _id: { $in: categoryIds } }).select(
+      'name type'
+    );
+    const categoryMap = categories.reduce((acc, cat) => {
+      acc[cat._id.toString()] = cat;
+      return acc;
+    }, {});
+
+    const incomeByCatFormatted = incomeByCategory.map((item) => {
+      const cat = categoryMap[item._id?.toString()];
+      return {
+        categoryId: item._id,
+        categoryName: cat ? cat.name : 'Unknown',
+        type: cat ? cat.type : null,
+        totalAmount: item.totalAmount,
+        count: item.count
+      };
+    });
+
+    const expenseByCatFormatted = expenseByCategory.map((item) => {
+      const cat = categoryMap[item._id?.toString()];
+      return {
+        categoryId: item._id,
+        categoryName: cat ? cat.name : 'Unknown',
+        type: cat ? cat.type : null,
+        totalAmount: item.totalAmount,
+        count: item.count
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        totalIncome,
+        totalIncomeCount,
+        totalExpense,
+        totalExpenseCount,
+        net: totalIncome - totalExpense,
+        incomeByCategory: incomeByCatFormatted,
+        expenseByCategory: expenseByCatFormatted
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// INVOICE CRUD
+const getInvoices = async (req, res, next) => {
+  try {
+    const filters = {};
+    const query = req.query;
+
+    if (req.user.college) {
+      filters.college = req.user.college;
+    }
+    if (query.status) {
+      filters.status = query.status;
+    }
+    if (query.studentId) {
+      filters.student = query.studentId;
+    }
+    if (query.accountId) {
+      filters.account = query.accountId;
+    }
+    if (query.startDate || query.endDate) {
+      filters.invoiceDate = {};
+      if (query.startDate) {
+        filters.invoiceDate.$gte = new Date(query.startDate);
+      }
+      if (query.endDate) {
+        filters.invoiceDate.$lte = new Date(query.endDate);
+      }
+    }
+
+    const page = parseInt(query.page, 10) || 1;
+    const limit = parseInt(query.limit, 10) || 20;
+    const skip = (page - 1) * limit;
+
+    const sortBy = query.sortBy || 'invoiceDate';
+    const sortOrder = query.sortOrder === 'asc' ? 1 : -1;
+    const sort = { [sortBy]: sortOrder };
+
+    const invoices = await Invoice.find(filters)
+      .populate('student', 'name studentId')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('savedContent', 'name')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email')
+      .sort(sort)
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Invoice.countDocuments(filters);
+
+    res.json({
+      success: true,
+      data: invoices,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getInvoiceById = async (req, res, next) => {
+  try {
+    const invoice = await Invoice.findById(req.params.id)
+      .populate('student', 'name studentId email phone')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('savedContent', 'name')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: 'Invoice not found' });
+    }
+
+    res.json({ success: true, data: invoice });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const createInvoice = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    // Calculate amounts
+    const items = req.body.items || [];
+    const taxCalculationMethod = req.body.taxCalculationMethod || 'total';
+    
+    // Ensure each item has paidAmount initialized
+    items.forEach(item => {
+      if (item.paidAmount === undefined) {
+        item.paidAmount = 0;
+      }
+      // Initialize tax fields
+      if (item.taxRate === undefined) {
+        item.taxRate = 0;
+      }
+      if (item.taxAmount === undefined) {
+        item.taxAmount = 0;
+      }
+      // Ensure paidAmount doesn't exceed item total (amount + tax)
+      const itemTotal = (item.amount || 0) + (item.taxAmount || 0);
+      if (item.paidAmount > itemTotal) {
+        item.paidAmount = itemTotal;
+      }
+    });
+    
+    // Calculate subtotal
+    const subtotal = items.reduce((sum, item) => sum + (item.amount || item.quantity * item.unitPrice), 0);
+    
+    let taxAmount = 0;
+    if (taxCalculationMethod === 'product') {
+      // Product-level tax: calculate tax for each item and sum
+      items.forEach(item => {
+        if (item.taxRate > 0) {
+          item.taxAmount = (item.amount * item.taxRate) / 100;
+        }
+      });
+      taxAmount = items.reduce((sum, item) => sum + (item.taxAmount || 0), 0);
+    } else {
+      // Total-level tax: calculate tax on subtotal
+      const taxRate = req.body.taxRate || 0;
+      taxAmount = (subtotal * taxRate) / 100;
+      // Reset item tax amounts for total-level tax
+      items.forEach(item => {
+        item.taxAmount = 0;
+        item.taxRate = 0;
+      });
+    }
+    
+    const discount = req.body.discount || 0;
+    const totalAmount = subtotal + taxAmount - discount;
+    
+    // Calculate paidAmount from items if not explicitly provided (cap at totalAmount = includes tax)
+    const itemPaidTotal = items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
+    let paidAmount, taxPaidAmount = 0;
+    
+    if (req.body.paidAmount !== undefined) {
+      // If paidAmount is explicitly provided, distribute it for total-level tax
+      if (taxCalculationMethod === 'total') {
+        const totalPayable = subtotal + taxAmount;
+        if (totalPayable > 0) {
+          const paymentForItems = req.body.paidAmount * (subtotal / totalPayable);
+          taxPaidAmount = req.body.paidAmount * (taxAmount / totalPayable);
+          // Distribute to items proportionally
+          items.forEach(item => {
+            const proportion = item.amount / subtotal;
+            item.paidAmount = Math.min(item.amount, paymentForItems * proportion);
+          });
+          paidAmount = Math.min(req.body.paidAmount, totalAmount);
+        } else {
+          paidAmount = Math.min(req.body.paidAmount, totalAmount);
+        }
+      } else {
+        // Product-level tax: paidAmount is sum of item paidAmounts
+        paidAmount = Math.min(req.body.paidAmount, totalAmount);
+      }
+    } else {
+      // Use item paidAmounts
+      if (taxCalculationMethod === 'total') {
+        paidAmount = Math.min(itemPaidTotal + (req.body.taxPaidAmount || 0), totalAmount);
+        taxPaidAmount = req.body.taxPaidAmount || 0;
+      } else {
+        paidAmount = Math.min(itemPaidTotal, totalAmount);
+      }
+    }
+
+    const data = {
+      ...req.body,
+      items,
+      taxCalculationMethod,
+      subtotal,
+      taxAmount,
+      totalAmount,
+      paidAmount,
+      taxPaidAmount,
+      balanceAmount: totalAmount - paidAmount,
+      college: req.body.college || req.user.college,
+      createdBy: req.user._id
+    };
+    // invoiceNumber is auto-generated in model pre-save when not provided
+    if (!data.invoiceNumber) delete data.invoiceNumber;
+
+    const invoice = await Invoice.create(data);
+    const populated = await Invoice.findById(invoice._id)
+      .populate('student', 'name studentId')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('savedContent', 'name')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.status(201).json({ success: true, data: populated });
+  } catch (error) {
+    if (error.code === 11000) {
+      res.status(409).json({
+        success: false,
+        message: 'Invoice with this number already exists for this college'
+      });
+    } else {
+      next(error);
+    }
+  }
+};
+
+const updateInvoice = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const invoice = await Invoice.findById(req.params.id);
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: 'Invoice not found' });
+    }
+
+    // Get tax calculation method
+    const taxCalculationMethod = req.body.taxCalculationMethod !== undefined 
+      ? req.body.taxCalculationMethod 
+      : invoice.taxCalculationMethod || 'total';
+
+    // Recalculate amounts if items are updated
+    if (req.body.items) {
+      const items = req.body.items;
+      // Ensure each item has paidAmount initialized
+      items.forEach(item => {
+        if (item.paidAmount === undefined) {
+          // Preserve existing paidAmount if item index matches
+          const existingItem = invoice.items[items.indexOf(item)];
+          item.paidAmount = existingItem ? (existingItem.paidAmount || 0) : 0;
+        }
+        // Initialize tax fields
+        if (item.taxRate === undefined) {
+          item.taxRate = 0;
+        }
+        if (item.taxAmount === undefined) {
+          item.taxAmount = 0;
+        }
+        // Ensure paidAmount doesn't exceed item total (amount + tax)
+        const itemTotal = (item.amount || 0) + (item.taxAmount || 0);
+        if (item.paidAmount > itemTotal) {
+          item.paidAmount = itemTotal;
+        }
+      });
+      
+      const subtotal = items.reduce((sum, item) => sum + (item.amount || item.quantity * item.unitPrice), 0);
+      
+      let taxAmount = 0;
+      if (taxCalculationMethod === 'product') {
+        // Product-level tax: calculate tax for each item and sum
+        items.forEach(item => {
+          if (item.taxRate > 0) {
+            item.taxAmount = (item.amount * item.taxRate) / 100;
+          } else {
+            item.taxAmount = 0;
+          }
+        });
+        taxAmount = items.reduce((sum, item) => sum + (item.taxAmount || 0), 0);
+      } else {
+        // Total-level tax: calculate tax on subtotal
+        const taxRate = req.body.taxRate !== undefined ? req.body.taxRate : invoice.taxRate;
+        taxAmount = (subtotal * taxRate) / 100;
+        // Reset item tax amounts for total-level tax
+        items.forEach(item => {
+          item.taxAmount = 0;
+          item.taxRate = 0;
+        });
+      }
+      
+      const discount = req.body.discount !== undefined ? req.body.discount : invoice.discount;
+      const totalAmount = subtotal + taxAmount - discount;
+
+      invoice.items = items;
+      invoice.taxCalculationMethod = taxCalculationMethod;
+      invoice.subtotal = subtotal;
+      invoice.taxAmount = taxAmount;
+      invoice.totalAmount = totalAmount;
+      
+      // Calculate paidAmount from items (cap at totalAmount so tax is included)
+      const itemPaidTotal = items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
+      invoice.paidAmount = Math.min(itemPaidTotal, totalAmount);
+    } else if (req.body.taxRate !== undefined || req.body.discount !== undefined || req.body.taxCalculationMethod !== undefined) {
+      const taxRate = req.body.taxRate !== undefined ? req.body.taxRate : invoice.taxRate;
+      const discount = req.body.discount !== undefined ? req.body.discount : invoice.discount;
+      
+      let taxAmount = 0;
+      if (taxCalculationMethod === 'product') {
+        // Product-level tax: sum item taxes
+        taxAmount = invoice.items.reduce((sum, item) => sum + (item.taxAmount || 0), 0);
+      } else {
+        // Total-level tax: calculate on subtotal
+        taxAmount = (invoice.subtotal * taxRate) / 100;
+        // Reset item tax amounts
+        invoice.items.forEach(item => {
+          item.taxAmount = 0;
+          item.taxRate = 0;
+        });
+      }
+      
+      const totalAmount = invoice.subtotal + taxAmount - discount;
+
+      invoice.taxCalculationMethod = taxCalculationMethod;
+      invoice.taxRate = taxRate;
+      invoice.taxAmount = taxAmount;
+      invoice.discount = discount;
+      invoice.totalAmount = totalAmount;
+    }
+
+    const updatableFields = [
+      'invoiceNumber',
+      'invoiceDate',
+      'dueDate',
+      'status',
+      'billTo',
+      'notes',
+      'terms',
+      'student',
+      'account',
+      'savedContent',
+      'taxCalculationMethod'
+    ];
+
+    updatableFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        invoice[field] = req.body[field];
+      }
+    });
+    
+    // Handle paidAmount update - if explicitly set, distribute proportionally to items and tax
+    if (req.body.paidAmount !== undefined && !req.body.items) {
+      if (invoice.taxCalculationMethod === 'total') {
+        // For total-level tax: distribute across subtotal + taxAmount
+        const totalPayable = invoice.subtotal + invoice.taxAmount;
+        if (totalPayable > 0) {
+          const paymentForItems = req.body.paidAmount * (invoice.subtotal / totalPayable);
+          const paymentForTax = req.body.paidAmount * (invoice.taxAmount / totalPayable);
+          
+          // Distribute to items proportionally
+          if (invoice.subtotal > 0) {
+            invoice.items.forEach(item => {
+              const proportion = item.amount / invoice.subtotal;
+              item.paidAmount = Math.min(item.amount, paymentForItems * proportion);
+            });
+          }
+          
+          // Allocate to tax
+          invoice.taxPaidAmount = Math.min(invoice.taxAmount, paymentForTax);
+          invoice.paidAmount = Math.min(req.body.paidAmount, invoice.totalAmount);
+        }
+      } else {
+        // Product-level tax: distribute by item total (amount + tax)
+        const getItemTotal = (item) => (item.amount || 0) + (item.taxAmount || 0);
+        const totalItemTotal = invoice.items.reduce((sum, item) => sum + getItemTotal(item), 0);
+        if (totalItemTotal > 0) {
+          invoice.items.forEach(item => {
+            const itemTotal = getItemTotal(item);
+            const proportion = itemTotal / totalItemTotal;
+            item.paidAmount = Math.min(itemTotal, req.body.paidAmount * proportion);
+          });
+          invoice.paidAmount = Math.min(req.body.paidAmount, invoice.totalAmount);
+        }
+      }
+    }
+    
+    // dueDate is optional; allow clearing with null
+    if (req.body.hasOwnProperty('dueDate') && req.body.dueDate === null) {
+      invoice.dueDate = undefined;
+    }
+
+    invoice.updatedBy = req.user._id;
+    await invoice.save();
+
+    const updated = await Invoice.findById(invoice._id)
+      .populate('student', 'name studentId')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('savedContent', 'name')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    if (error.code === 11000) {
+      res.status(409).json({
+        success: false,
+        message: 'Invoice with this number already exists for this college'
+      });
+    } else {
+      next(error);
+    }
+  }
+};
+
+const deleteInvoice = async (req, res, next) => {
+  try {
+    const invoice = await Invoice.findByIdAndDelete(req.params.id);
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: 'Invoice not found' });
+    }
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Pay for specific invoice items
+const payInvoiceItems = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const invoice = await Invoice.findById(req.params.id);
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: 'Invoice not found' });
+    }
+
+    const { itemPayments } = req.body; // Array of { itemIndex, amount }
+    
+    if (!Array.isArray(itemPayments) || itemPayments.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'itemPayments must be a non-empty array'
+      });
+    }
+
+    // Item total for payment = amount + tax (so payments can cover tax)
+    const getItemTotal = (item) => (item.amount || 0) + (item.taxAmount || 0);
+
+    // Validate and apply payments to items
+    itemPayments.forEach(({ itemIndex, amount }) => {
+      if (itemIndex < 0 || itemIndex >= invoice.items.length) {
+        throw new Error(`Invalid item index: ${itemIndex}`);
+      }
+      if (amount < 0) {
+        throw new Error(`Payment amount must be positive`);
+      }
+      
+      const item = invoice.items[itemIndex];
+      const itemTotal = getItemTotal(item);
+      const newPaidAmount = (item.paidAmount || 0) + amount;
+      item.paidAmount = Math.min(newPaidAmount, itemTotal); // Cap at item total (amount + tax)
+    });
+
+    // Recalculate invoice paidAmount from items (cap at totalAmount)
+    if (invoice.taxCalculationMethod === 'total') {
+      // For total-level tax: items + taxPaidAmount
+      const itemSumPaid = invoice.items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
+      invoice.paidAmount = Math.min(itemSumPaid + (invoice.taxPaidAmount || 0), invoice.totalAmount);
+    } else {
+      // Product-level tax: tax is included in item.paidAmount
+      const sumPaid = invoice.items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
+      invoice.paidAmount = Math.min(sumPaid, invoice.totalAmount);
+    }
+    invoice.balanceAmount = invoice.totalAmount - invoice.paidAmount;
+    
+    // Update status based on balance
+    if (invoice.balanceAmount <= 0 && invoice.status === 'sent') {
+      invoice.status = 'paid';
+    } else if (
+      invoice.dueDate &&
+      invoice.balanceAmount > 0 &&
+      new Date() > invoice.dueDate &&
+      invoice.status === 'sent'
+    ) {
+      invoice.status = 'overdue';
+    }
+
+    invoice.updatedBy = req.user._id;
+    await invoice.save();
+
+    const updated = await Invoice.findById(invoice._id)
+      .populate('student', 'name studentId')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('savedContent', 'name')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    if (error.message.includes('Invalid item index') || error.message.includes('Payment amount')) {
+      res.status(400).json({ success: false, message: error.message });
+    } else {
+      next(error);
+    }
+  }
+};
+
+// SAVED INVOICE CONTENT CRUD
+const getSavedInvoiceContents = async (req, res, next) => {
+  try {
+    const filters = {};
+    if (req.user.college) {
+      filters.college = req.user.college;
+    }
+    if (req.query.isActive !== undefined) {
+      filters.isActive = req.query.isActive === 'true';
+    }
+
+    const contents = await SavedInvoiceContent.find(filters)
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email')
+      .sort({ name: 1 });
+
+    res.json({ success: true, data: contents });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getSavedInvoiceContentById = async (req, res, next) => {
+  try {
+    const content = await SavedInvoiceContent.findById(req.params.id)
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    if (!content) {
+      return res.status(404).json({ success: false, message: 'Saved invoice content not found' });
+    }
+
+    res.json({ success: true, data: content });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const createSavedInvoiceContent = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const items = req.body.items || [];
+    const taxCalculationMethod = req.body.taxCalculationMethod || 'total';
+    
+    // Initialize tax fields for items
+    items.forEach(item => {
+      if (item.taxRate === undefined) {
+        item.taxRate = 0;
+      }
+      if (item.taxAmount === undefined) {
+        item.taxAmount = 0;
+      }
+    });
+    
+    // Calculate subtotal
+    const subtotal = items.reduce((sum, item) => sum + (item.amount || item.quantity * item.unitPrice), 0);
+    
+    let taxAmount = 0;
+    if (taxCalculationMethod === 'product') {
+      // Product-level tax: calculate tax for each item and sum
+      items.forEach(item => {
+        if (item.taxRate > 0) {
+          item.taxAmount = (item.amount * item.taxRate) / 100;
+        }
+      });
+      taxAmount = items.reduce((sum, item) => sum + (item.taxAmount || 0), 0);
+    } else {
+      // Total-level tax: calculate tax on subtotal
+      const taxRate = req.body.taxRate || 0;
+      taxAmount = (subtotal * taxRate) / 100;
+      // Reset item tax amounts for total-level tax
+      items.forEach(item => {
+        item.taxAmount = 0;
+        item.taxRate = 0;
+      });
+    }
+    
+    const discount = req.body.discount || 0;
+    const totalAmount = subtotal + taxAmount - discount;
+
+    const data = {
+      ...req.body,
+      items,
+      taxCalculationMethod,
+      subtotal,
+      taxAmount,
+      totalAmount,
+      college: req.body.college || req.user.college,
+      createdBy: req.user._id
+    };
+
+    const content = await SavedInvoiceContent.create(data);
+    const populated = await SavedInvoiceContent.findById(content._id)
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.status(201).json({ success: true, data: populated });
+  } catch (error) {
+    if (error.code === 11000) {
+      res.status(409).json({
+        success: false,
+        message: 'Saved invoice content with this name already exists for this college'
+      });
+    } else {
+      next(error);
+    }
+  }
+};
+
+const updateSavedInvoiceContent = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const content = await SavedInvoiceContent.findById(req.params.id);
+    if (!content) {
+      return res.status(404).json({ success: false, message: 'Saved invoice content not found' });
+    }
+
+    // Get tax calculation method
+    const taxCalculationMethod = req.body.taxCalculationMethod !== undefined 
+      ? req.body.taxCalculationMethod 
+      : content.taxCalculationMethod || 'total';
+
+    // Recalculate amounts if items are updated
+    if (req.body.items) {
+      const items = req.body.items;
+      // Initialize tax fields
+      items.forEach(item => {
+        if (item.taxRate === undefined) {
+          item.taxRate = 0;
+        }
+        if (item.taxAmount === undefined) {
+          item.taxAmount = 0;
+        }
+      });
+      
+      const subtotal = items.reduce((sum, item) => sum + (item.amount || item.quantity * item.unitPrice), 0);
+      
+      let taxAmount = 0;
+      if (taxCalculationMethod === 'product') {
+        // Product-level tax: calculate tax for each item and sum
+        items.forEach(item => {
+          if (item.taxRate > 0) {
+            item.taxAmount = (item.amount * item.taxRate) / 100;
+          } else {
+            item.taxAmount = 0;
+          }
+        });
+        taxAmount = items.reduce((sum, item) => sum + (item.taxAmount || 0), 0);
+      } else {
+        // Total-level tax: calculate tax on subtotal
+        const taxRate = req.body.taxRate !== undefined ? req.body.taxRate : content.taxRate;
+        taxAmount = (subtotal * taxRate) / 100;
+        // Reset item tax amounts for total-level tax
+        items.forEach(item => {
+          item.taxAmount = 0;
+          item.taxRate = 0;
+        });
+      }
+      
+      const discount = req.body.discount !== undefined ? req.body.discount : content.discount;
+      const totalAmount = subtotal + taxAmount - discount;
+
+      content.items = items;
+      content.taxCalculationMethod = taxCalculationMethod;
+      content.subtotal = subtotal;
+      content.taxAmount = taxAmount;
+      content.totalAmount = totalAmount;
+    } else if (req.body.taxRate !== undefined || req.body.discount !== undefined || req.body.taxCalculationMethod !== undefined) {
+      const taxRate = req.body.taxRate !== undefined ? req.body.taxRate : content.taxRate;
+      const discount = req.body.discount !== undefined ? req.body.discount : content.discount;
+      
+      let taxAmount = 0;
+      if (taxCalculationMethod === 'product') {
+        // Product-level tax: sum item taxes
+        taxAmount = content.items.reduce((sum, item) => sum + (item.taxAmount || 0), 0);
+      } else {
+        // Total-level tax: calculate on subtotal
+        taxAmount = (content.subtotal * taxRate) / 100;
+        // Reset item tax amounts
+        content.items.forEach(item => {
+          item.taxAmount = 0;
+          item.taxRate = 0;
+        });
+      }
+      
+      const totalAmount = content.subtotal + taxAmount - discount;
+
+      content.taxCalculationMethod = taxCalculationMethod;
+      content.taxRate = taxRate;
+      content.taxAmount = taxAmount;
+      content.discount = discount;
+      content.totalAmount = totalAmount;
+    }
+
+    const updatableFields = [
+      'name',
+      'description',
+      'notes',
+      'terms',
+      'isActive'
+    ];
+
+    updatableFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        content[field] = req.body[field];
+      }
+    });
+
+    content.updatedBy = req.user._id;
+    await content.save();
+
+    const updated = await SavedInvoiceContent.findById(content._id)
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    if (error.code === 11000) {
+      res.status(409).json({
+        success: false,
+        message: 'Saved invoice content with this name already exists for this college'
+      });
+    } else {
+      next(error);
+    }
+  }
+};
+
+const deleteSavedInvoiceContent = async (req, res, next) => {
+  try {
+    const content = await SavedInvoiceContent.findByIdAndDelete(req.params.id);
+    if (!content) {
+      return res.status(404).json({ success: false, message: 'Saved invoice content not found' });
+    }
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ACCOUNT CRUD
+const getAccounts = async (req, res, next) => {
+  try {
+    const filters = {};
+    if (req.user.college) {
+      filters.college = req.user.college;
+    }
+    if (req.query.accountType) {
+      filters.accountType = req.query.accountType;
+    }
+    if (req.query.status) {
+      filters.status = req.query.status;
+    }
+
+    const accounts = await Account.find(filters)
+      .populate('openingBalanceLedger', 'entryDate entryType description lines')
+      .populate('openingBalanceLedger.lines.account', 'name accountType')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email')
+      .sort({ name: 1 });
+
+    res.json({ success: true, data: accounts });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getAccountById = async (req, res, next) => {
+  try {
+    const conditions = { _id: req.params.id };
+    if (req.user.college) {
+      conditions.college = req.user.college;
+    }
+    const account = await Account.findOne(conditions)
+      .populate('openingBalanceLedger')
+      .populate('openingBalanceLedger.lines.account', 'name accountType')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    if (!account) {
+      return res.status(404).json({ success: false, message: 'Account not found' });
+    }
+
+    // Optionally include ledger entries count or recent entries
+    if (req.query.includeLedger === 'true') {
+      const ledgerCount = await Ledger.countDocuments({ 'lines.account': account._id });
+      const recentLedgers = await Ledger.find({ 'lines.account': account._id })
+        .sort({ entryDate: -1 })
+        .limit(Number(req.query.ledgerLimit) || 10)
+        .populate('lines.account', 'name accountType')
+        .populate('category', 'name type')
+        .lean();
+      return res.json({
+        success: true,
+        data: {
+          ...account.toObject(),
+          ledgerCount,
+          recentLedgers
+        }
+      });
+    }
+
+    res.json({ success: true, data: account });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const createAccount = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const collegeId = req.body.college || req.user.college;
+    const data = {
+      ...req.body,
+      college: collegeId,
+      createdBy: req.user._id
+    };
+
+    const account = await Account.create(data);
+
+    // Link account to ledger: create opening balance entry so every account has at least one ledger record
+    const openingAmount = req.body.balance != null ? Number(req.body.balance) : (req.body.openingBalance != null ? Number(req.body.openingBalance) : 0);
+    const openingDate = req.body.openingBalanceDate ? new Date(req.body.openingBalanceDate) : new Date();
+    const transactionType = openingAmount >= 0 ? 'credit' : 'debit';
+    const amount = Math.abs(openingAmount);
+
+    const ledgerEntry = await Ledger.create({
+      entryDate: openingDate,
+      entryType: 'opening',
+      lines: [{
+        account: account._id,
+        transactionType,
+        amount,
+        balanceAfter: account.balance
+      }],
+      description: `Opening balance: ${account.name}`,
+      reference: account.accountNumber || account._id.toString(),
+      referenceId: account._id,
+      referenceModel: 'Account',
+      college: collegeId,
+      createdBy: req.user._id
+    });
+
+    account.openingBalanceLedger = ledgerEntry._id;
+    if (!account.ledgers) account.ledgers = [];
+    account.ledgers.push(ledgerEntry._id);
+    await account.save();
+
+    const populated = await Account.findById(account._id)
+      .populate('openingBalanceLedger')
+      .populate('openingBalanceLedger.lines.account', 'name accountType')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.status(201).json({ success: true, data: populated });
+  } catch (error) {
+    if (error.code === 11000) {
+      res.status(409).json({
+        success: false,
+        message: 'Account with this name already exists for this college'
+      });
+    } else {
+      next(error);
+    }
+  }
+};
+
+const updateAccount = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const conditions = { _id: req.params.id };
+    if (req.user.college) {
+      conditions.college = req.user.college;
+    }
+    const account = await Account.findOne(conditions);
+    if (!account) {
+      return res.status(404).json({ success: false, message: 'Account not found' });
+    }
+
+    const oldBalance = account.balance;
+    const updatableFields = [
+      'name',
+      'accountNumber',
+      'accountType',
+      'bankName',
+      'branch',
+      'ifscCode',
+      'balance',
+      'openingBalance',
+      'openingBalanceDate',
+      'status',
+      'description',
+      'contactPerson',
+      'isDefault'
+    ];
+
+    updatableFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        account[field] = req.body[field];
+      }
+    });
+
+    account.updatedBy = req.user._id;
+
+    // Record balance change in linked ledger so account transactions are in ledger
+    const newBalance = account.balance;
+    if (req.body.balance !== undefined && newBalance !== oldBalance) {
+      const delta = newBalance - oldBalance;
+      const amount = Math.abs(delta);
+      const transactionType = delta >= 0 ? 'credit' : 'debit';
+      const collegeId = account.college || req.user.college;
+      const adjLedger = await Ledger.create({
+        entryDate: new Date(),
+        entryType: 'adjustment',
+        lines: [{
+          account: account._id,
+          transactionType,
+          amount,
+          balanceAfter: newBalance
+        }],
+        description: `Balance adjustment: ${oldBalance} → ${newBalance}`,
+        reference: account.accountNumber || account._id.toString(),
+        referenceId: account._id,
+        referenceModel: 'Account',
+        college: collegeId,
+        createdBy: req.user._id
+      });
+      if (!account.ledgers) account.ledgers = [];
+      account.ledgers.push(adjLedger._id);
+    }
+
+    await account.save();
+
+    const updated = await Account.findById(account._id)
+      .populate('openingBalanceLedger', 'entryDate entryType description lines')
+      .populate('openingBalanceLedger.lines.account', 'name accountType')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    if (error.code === 11000) {
+      res.status(409).json({
+        success: false,
+        message: 'Account with this name already exists for this college'
+      });
+    } else {
+      next(error);
+    }
+  }
+};
+
+const deleteAccount = async (req, res, next) => {
+  try {
+    const conditions = { _id: req.params.id };
+    if (req.user.college) {
+      conditions.college = req.user.college;
+    }
+    const account = await Account.findOne(conditions);
+    if (!account) {
+      return res.status(404).json({ success: false, message: 'Account not found' });
+    }
+    await Account.findByIdAndDelete(req.params.id);
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** Get ledger entries linked to an account (transactions recorded for this account). */
+const getAccountLedgers = async (req, res, next) => {
+  try {
+    const conditions = { _id: req.params.id };
+    if (req.user.college) {
+      conditions.college = req.user.college;
+    }
+    const account = await Account.findOne(conditions);
+    if (!account) {
+      return res.status(404).json({ success: false, message: 'Account not found' });
+    }
+
+    const query = req.query;
+    const filters = { 'lines.account': account._id };
+    if (req.user.college) filters.college = req.user.college;
+    if (query.entryType) filters.entryType = query.entryType;
+    if (query.startDate || query.endDate) {
+      filters.entryDate = {};
+      if (query.startDate) filters.entryDate.$gte = new Date(query.startDate);
+      if (query.endDate) filters.entryDate.$lte = new Date(query.endDate);
+    }
+
+    const page = parseInt(query.page, 10) || 1;
+    const limit = parseInt(query.limit, 10) || 50;
+    const skip = (page - 1) * limit;
+    const sortBy = query.sortBy || 'entryDate';
+    const sortOrder = query.sortOrder === 'asc' ? 1 : -1;
+    const sort = { [sortBy]: sortOrder };
+
+    const ledgers = await Ledger.find(filters)
+      .populate('lines.account', 'name accountType')
+      .populate('category', 'name type')
+      .populate('student', 'name studentId')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email')
+      .sort(sort)
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Ledger.countDocuments(filters);
+
+    res.json({
+      success: true,
+      data: ledgers,
+      account: { _id: account._id, name: account.name, accountType: account.accountType, balance: account.balance },
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// LEDGER CRUD
+const getLedgers = async (req, res, next) => {
+  try {
+    const filters = {};
+    const query = req.query;
+
+    // Scope to college: each college has its own set of ledger records
+    if (req.user.college) {
+      filters.college = req.user.college;
+    } else if (query.collegeId) {
+      filters.college = query.collegeId;
+    }
+    if (query.accountId) {
+      filters['lines.account'] = query.accountId;
+    }
+    if (query.entryType) {
+      filters.entryType = query.entryType;
+    }
+    if (query.startDate || query.endDate) {
+      filters.entryDate = {};
+      if (query.startDate) {
+        filters.entryDate.$gte = new Date(query.startDate);
+      }
+      if (query.endDate) {
+        filters.entryDate.$lte = new Date(query.endDate);
+      }
+    }
+
+    const page = parseInt(query.page, 10) || 1;
+    const limit = parseInt(query.limit, 10) || 50;
+    const skip = (page - 1) * limit;
+
+    const sortBy = query.sortBy || 'entryDate';
+    const sortOrder = query.sortOrder === 'asc' ? 1 : -1;
+    const sort = { [sortBy]: sortOrder };
+
+    const ledgers = await Ledger.find(filters)
+      .populate('lines.account', 'name accountType')
+      .populate('category', 'name type')
+      .populate('student', 'name studentId')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email')
+      .sort(sort)
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Ledger.countDocuments(filters);
+
+    res.json({
+      success: true,
+      data: ledgers,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getLedgerById = async (req, res, next) => {
+  try {
+    const conditions = { _id: req.params.id };
+    if (req.user.college) {
+      conditions.college = req.user.college;
+    }
+    const ledger = await Ledger.findOne(conditions)
+      .populate('lines.account', 'name accountType')
+      .populate('category', 'name type')
+      .populate('student', 'name studentId')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    if (!ledger) {
+      return res.status(404).json({ success: false, message: 'Ledger entry not found' });
+    }
+
+    res.json({ success: true, data: ledger });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const createLedger = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const lines = req.body.lines;
+    if (!lines || !Array.isArray(lines) || lines.length < 1) {
+      return res.status(400).json({ success: false, message: 'At least one line (account, transactionType, amount) is required' });
+    }
+
+    const collegeId = req.body.college || req.user.college;
+    if (!collegeId) {
+      return res.status(400).json({ success: false, message: 'College is required for ledger entries' });
+    }
+
+    const builtLines = [];
+    for (const line of lines) {
+      const acc = await Account.findById(line.account);
+      if (!acc) {
+        return res.status(404).json({ success: false, message: `Account not found: ${line.account}` });
+      }
+      const amount = Math.abs(Number(line.amount)) || 0;
+      const transactionType = line.transactionType === 'credit' ? 'credit' : 'debit';
+      let balanceAfter = acc.balance;
+      if (transactionType === 'credit') balanceAfter += amount;
+      else balanceAfter -= amount;
+      builtLines.push({
+        account: acc._id,
+        transactionType,
+        amount,
+        balanceAfter
+      });
+    }
+
+    const data = {
+      entryDate: req.body.entryDate || new Date(),
+      entryType: req.body.entryType,
+      lines: builtLines,
+      description: req.body.description,
+      reference: req.body.reference,
+      referenceId: req.body.referenceId,
+      referenceModel: req.body.referenceModel,
+      category: req.body.category,
+      student: req.body.student,
+      college: collegeId,
+      notes: req.body.notes,
+      createdBy: req.user._id
+    };
+
+    const ledger = await Ledger.create(data);
+    await Ledger.applyToAccounts(ledger);
+
+    const populated = await Ledger.findById(ledger._id)
+      .populate('lines.account', 'name accountType')
+      .populate('category', 'name type')
+      .populate('student', 'name studentId')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.status(201).json({ success: true, data: populated });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateLedger = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const conditions = { _id: req.params.id };
+    if (req.user.college) {
+      conditions.college = req.user.college;
+    }
+    const ledger = await Ledger.findOne(conditions);
+    if (!ledger) {
+      return res.status(404).json({ success: false, message: 'Ledger entry not found' });
+    }
+
+    if (req.body.lines !== undefined && Array.isArray(req.body.lines) && req.body.lines.length >= 1) {
+      await Ledger.revertFromAccounts(ledger);
+      const builtLines = [];
+      for (const line of req.body.lines) {
+        const acc = await Account.findById(line.account);
+        if (!acc) {
+          return res.status(404).json({ success: false, message: `Account not found: ${line.account}` });
+        }
+        const amount = Math.abs(Number(line.amount)) || 0;
+        const transactionType = line.transactionType === 'credit' ? 'credit' : 'debit';
+        let balanceAfter = acc.balance;
+        if (transactionType === 'credit') balanceAfter += amount;
+        else balanceAfter -= amount;
+        builtLines.push({ account: acc._id, transactionType, amount, balanceAfter });
+      }
+      ledger.lines = builtLines;
+    }
+
+    const updatableFields = [
+      'entryDate',
+      'entryType',
+      'description',
+      'reference',
+      'referenceId',
+      'referenceModel',
+      'category',
+      'student',
+      'college',
+      'notes'
+    ];
+    updatableFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        ledger[field] = req.body[field];
+      }
+    });
+
+    ledger.updatedBy = req.user._id;
+    await ledger.save();
+
+    if (req.body.lines !== undefined && Array.isArray(req.body.lines) && req.body.lines.length >= 1) {
+      await Ledger.applyToAccounts(ledger);
+    }
+
+    const updated = await Ledger.findById(ledger._id)
+      .populate('lines.account', 'name accountType')
+      .populate('category', 'name type')
+      .populate('student', 'name studentId')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const deleteLedger = async (req, res, next) => {
+  try {
+    const conditions = { _id: req.params.id };
+    if (req.user.college) {
+      conditions.college = req.user.college;
+    }
+    const ledger = await Ledger.findOne(conditions);
+    if (!ledger) {
+      return res.status(404).json({ success: false, message: 'Ledger entry not found' });
+    }
+
+    await Ledger.revertFromAccounts(ledger);
+    await Ledger.findByIdAndDelete(req.params.id);
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// PAYMENT CRUD
+const getPayments = async (req, res, next) => {
+  try {
+    const filters = {};
+    const query = req.query;
+
+    if (req.user.college) {
+      filters.college = req.user.college;
+    }
+    if (query.status) {
+      filters.status = query.status;
+    }
+    if (query.paymentMethod) {
+      filters.paymentMethod = query.paymentMethod;
+    }
+    if (query.invoiceId) {
+      filters.invoice = query.invoiceId;
+    }
+    if (query.studentId) {
+      filters.student = query.studentId;
+    }
+    if (query.accountId) {
+      filters.account = query.accountId;
+    }
+    if (query.startDate || query.endDate) {
+      filters.paymentDate = {};
+      if (query.startDate) {
+        filters.paymentDate.$gte = new Date(query.startDate);
+      }
+      if (query.endDate) {
+        filters.paymentDate.$lte = new Date(query.endDate);
+      }
+    }
+
+    const page = parseInt(query.page, 10) || 1;
+    const limit = parseInt(query.limit, 10) || 20;
+    const skip = (page - 1) * limit;
+
+    const sortBy = query.sortBy || 'paymentDate';
+    const sortOrder = query.sortOrder === 'asc' ? 1 : -1;
+    const sort = { [sortBy]: sortOrder };
+
+    const payments = await Payment.find(filters)
+      .populate('invoice', 'invoiceNumber totalAmount')
+      .populate('student', 'name studentId')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email')
+      .sort(sort)
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Payment.countDocuments(filters);
+
+    res.json({
+      success: true,
+      data: payments,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getPaymentById = async (req, res, next) => {
+  try {
+    const payment = await Payment.findById(req.params.id)
+      .populate('invoice', 'invoiceNumber totalAmount balanceAmount')
+      .populate('student', 'name studentId')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    if (!payment) {
+      return res.status(404).json({ success: false, message: 'Payment not found' });
+    }
+
+    res.json({ success: true, data: payment });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const createPayment = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const account = await Account.findById(req.body.account);
+    if (!account) {
+      return res.status(404).json({ success: false, message: 'Account not found' });
+    }
+
+    const data = {
+      ...req.body,
+      college: req.body.college || req.user.college,
+      createdBy: req.user._id
+    };
+    // paymentNumber is auto-generated in model pre-save when not provided
+    if (!data.paymentNumber) delete data.paymentNumber;
+
+    const payment = await Payment.create(data);
+
+    // Update invoice if linked
+    if (req.body.invoice) {
+      const invoice = await Invoice.findById(req.body.invoice);
+      if (invoice && payment.status === 'completed') {
+        // Item total for payment = amount + tax (so payments can cover tax)
+        const getItemTotal = (item) => (item.amount || 0) + (item.taxAmount || 0);
+
+        // If itemPayments are provided, apply payments to specific items
+        if (req.body.itemPayments && Array.isArray(req.body.itemPayments)) {
+          req.body.itemPayments.forEach(({ itemIndex, amount }) => {
+            if (itemIndex >= 0 && itemIndex < invoice.items.length) {
+              const item = invoice.items[itemIndex];
+              const itemTotal = getItemTotal(item);
+              const newPaidAmount = (item.paidAmount || 0) + amount;
+              item.paidAmount = Math.min(newPaidAmount, itemTotal);
+            }
+          });
+          
+          // Recalculate invoice paidAmount
+          if (invoice.taxCalculationMethod === 'total') {
+            // For total-level tax: items + taxPaidAmount
+            const itemSumPaid = invoice.items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
+            invoice.paidAmount = Math.min(itemSumPaid + (invoice.taxPaidAmount || 0), invoice.totalAmount);
+          } else {
+            // Product-level tax: tax is included in item.paidAmount
+            const sumPaid = invoice.items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
+            invoice.paidAmount = Math.min(sumPaid, invoice.totalAmount);
+          }
+        } else {
+          // Default behavior: distribute payment proportionally across unpaid amount (items + tax)
+          if (invoice.taxCalculationMethod === 'total') {
+            // For total-level tax: distribute across subtotal + taxAmount
+            const itemSumPaid = invoice.items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
+            const taxPaid = invoice.taxPaidAmount || 0;
+            const unpaidSubtotal = invoice.subtotal - itemSumPaid;
+            const unpaidTax = invoice.taxAmount - taxPaid;
+            const totalUnpaid = unpaidSubtotal + unpaidTax;
+            
+            if (totalUnpaid > 0) {
+              // Allocate payment proportionally: first to items, then to tax
+              const paymentForItems = Math.min(payment.amount * (unpaidSubtotal / totalUnpaid), unpaidSubtotal);
+              const paymentForTax = Math.min(payment.amount - paymentForItems, unpaidTax);
+              
+              // Distribute paymentForItems across items proportionally
+              if (unpaidSubtotal > 0 && paymentForItems > 0) {
+                const unpaidItems = invoice.items.filter(item => (item.paidAmount || 0) < item.amount);
+                if (unpaidItems.length > 0) {
+                  const totalUnpaidItems = unpaidItems.reduce((sum, item) => sum + (item.amount - (item.paidAmount || 0)), 0);
+                  unpaidItems.forEach(item => {
+                    const itemUnpaid = item.amount - (item.paidAmount || 0);
+                    const proportion = itemUnpaid / totalUnpaidItems;
+                    const itemPayment = Math.min(paymentForItems * proportion, itemUnpaid);
+                    item.paidAmount = (item.paidAmount || 0) + itemPayment;
+                  });
+                }
+              }
+              
+              // Allocate remaining to tax
+              if (paymentForTax > 0) {
+                invoice.taxPaidAmount = Math.min((invoice.taxPaidAmount || 0) + paymentForTax, invoice.taxAmount);
+              }
+              
+              const finalItemSum = invoice.items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
+              invoice.paidAmount = Math.min(finalItemSum + (invoice.taxPaidAmount || 0), invoice.totalAmount);
+            } else {
+              invoice.paidAmount = Math.min((invoice.paidAmount || 0) + payment.amount, invoice.totalAmount);
+            }
+          } else {
+            // Product-level tax: distribute across items (tax included in item totals)
+            const unpaidItems = invoice.items.filter(item => (item.paidAmount || 0) < getItemTotal(item));
+            if (unpaidItems.length > 0) {
+              const totalUnpaid = unpaidItems.reduce((sum, item) => sum + (getItemTotal(item) - (item.paidAmount || 0)), 0);
+              unpaidItems.forEach(item => {
+                const itemTotal = getItemTotal(item);
+                const itemUnpaid = itemTotal - (item.paidAmount || 0);
+                const proportion = itemUnpaid / totalUnpaid;
+                const paymentForItem = Math.min(payment.amount * proportion, itemUnpaid);
+                item.paidAmount = Math.min((item.paidAmount || 0) + paymentForItem, itemTotal);
+              });
+              const sumPaid = invoice.items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
+              invoice.paidAmount = Math.min(sumPaid, invoice.totalAmount);
+            } else {
+              invoice.paidAmount = Math.min((invoice.paidAmount || 0) + payment.amount, invoice.totalAmount);
+            }
+          }
+        }
+        invoice.balanceAmount = invoice.totalAmount - invoice.paidAmount;
+        if (invoice.balanceAmount <= 0) {
+          invoice.status = 'paid';
+        }
+        invoice.updatedBy = req.user._id;
+        await invoice.save();
+      }
+    }
+
+    // Update account balance and create ledger entry if payment is completed
+    if (payment.status === 'completed') {
+      account.balance += payment.amount;
+      account.updatedBy = req.user._id;
+      await account.save();
+
+      const paymentLedger = await Ledger.create({
+        entryDate: payment.paymentDate,
+        entryType: 'payment',
+        lines: [{
+          account: account._id,
+          transactionType: 'credit',
+          amount: payment.amount,
+          balanceAfter: account.balance
+        }],
+        description: `Payment received: ${payment.paymentNumber}`,
+        reference: payment.paymentNumber,
+        referenceId: payment._id,
+        referenceModel: 'Payment',
+        student: payment.student,
+        college: payment.college,
+        createdBy: req.user._id
+      });
+      await Ledger.applyToAccounts(paymentLedger);
+
+      // Record payment as income in Finance (Payments category) for tracking and reports
+      const paymentsCategory = await getOrCreatePaymentsCategory(payment.college, req.user._id);
+      await Income.create({
+        title: `Payment: ${payment.paymentNumber}`,
+        amount: payment.amount,
+        date: payment.paymentDate,
+        category: paymentsCategory._id,
+        account: payment.account,
+        student: payment.student,
+        college: payment.college,
+        referenceNumber: payment.paymentNumber,
+        notes: payment.notes || (payment.invoice ? `Invoice payment` : 'Payment received'),
+        payment: payment._id,
+        createdBy: req.user._id
+      });
+    }
+
+    const populated = await Payment.findById(payment._id)
+      .populate('invoice', 'invoiceNumber totalAmount')
+      .populate('student', 'name studentId')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.status(201).json({ success: true, data: populated });
+  } catch (error) {
+    if (error.code === 11000) {
+      res.status(409).json({
+        success: false,
+        message: 'Payment with this number already exists for this college'
+      });
+    } else {
+      next(error);
+    }
+  }
+};
+
+const updatePayment = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const payment = await Payment.findById(req.params.id);
+    if (!payment) {
+      return res.status(404).json({ success: false, message: 'Payment not found' });
+    }
+
+    const oldStatus = payment.status;
+    const oldAmount = payment.amount;
+
+    const updatableFields = [
+      'paymentNumber',
+      'paymentDate',
+      'amount',
+      'paymentMethod',
+      'status',
+      'account',
+      'invoice',
+      'student',
+      'referenceNumber',
+      'transactionId',
+      'chequeNumber',
+      'chequeDate',
+      'bankName',
+      'description',
+      'notes'
+    ];
+
+    updatableFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        payment[field] = req.body[field];
+      }
+    });
+
+    payment.updatedBy = req.user._id;
+    await payment.save();
+
+    // Handle status changes
+    const account = await Account.findById(payment.account);
+    if (account) {
+      if (oldStatus === 'completed' && payment.status !== 'completed') {
+        // Revert old transaction
+        account.balance -= oldAmount;
+        // Delete or update ledger entry
+        await Ledger.findOneAndDelete({
+          referenceId: payment._id,
+          referenceModel: 'Payment'
+        });
+      } else if (oldStatus !== 'completed' && payment.status === 'completed') {
+        // Apply new transaction
+        account.balance += payment.amount;
+        const paymentLedger = await Ledger.create({
+          entryDate: payment.paymentDate,
+          entryType: 'payment',
+          lines: [{
+            account: account._id,
+            transactionType: 'credit',
+            amount: payment.amount,
+            balanceAfter: account.balance
+          }],
+          description: `Payment received: ${payment.paymentNumber}`,
+          reference: payment.paymentNumber,
+          referenceId: payment._id,
+          referenceModel: 'Payment',
+          student: payment.student,
+          college: payment.college,
+          createdBy: req.user._id
+        });
+        await Ledger.applyToAccounts(paymentLedger);
+        // Record payment as income (Payments category)
+        const paymentsCategory = await getOrCreatePaymentsCategory(payment.college, req.user._id);
+        await Income.create({
+          title: `Payment: ${payment.paymentNumber}`,
+          amount: payment.amount,
+          date: payment.paymentDate,
+          category: paymentsCategory._id,
+          account: payment.account,
+          student: payment.student,
+          college: payment.college,
+          referenceNumber: payment.paymentNumber,
+          notes: payment.notes || (payment.invoice ? `Invoice payment` : 'Payment received'),
+          payment: payment._id,
+          createdBy: req.user._id
+        });
+      } else if (oldStatus === 'completed' && payment.status !== 'completed') {
+        // Cancel the income record linked to this payment (for reporting; account already reverted above)
+        await Income.findOneAndUpdate(
+          { payment: payment._id },
+          { isCancelled: true, updatedBy: req.user._id }
+        );
+      } else if (oldStatus === 'completed' && payment.status === 'completed' && oldAmount !== payment.amount) {
+        // Update amount
+        account.balance = account.balance - oldAmount + payment.amount;
+        const ledger = await Ledger.findOne({
+          referenceId: payment._id,
+          referenceModel: 'Payment'
+        });
+        if (ledger) {
+          await Ledger.revertFromAccounts(ledger);
+          ledger.lines = [{
+            account: account._id,
+            transactionType: 'credit',
+            amount: payment.amount,
+            balanceAfter: account.balance
+          }];
+          ledger.updatedBy = req.user._id;
+          await ledger.save();
+          await Ledger.applyToAccounts(ledger);
+        }
+        // Update linked income amount for reporting
+        await Income.findOneAndUpdate(
+          { payment: payment._id },
+          { amount: payment.amount, updatedBy: req.user._id }
+        );
+      }
+
+      account.updatedBy = req.user._id;
+      await account.save();
+    }
+
+    // Update invoice if linked
+    if (payment.invoice) {
+      const invoice = await Invoice.findById(payment.invoice);
+      if (invoice) {
+        if (payment.status === 'completed') {
+          // Recalculate paid amount from item-level payments (cap at totalAmount so tax is included)
+          if (invoice.taxCalculationMethod === 'total') {
+            const itemSumPaid = invoice.items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
+            invoice.paidAmount = Math.min(itemSumPaid + (invoice.taxPaidAmount || 0), invoice.totalAmount);
+          } else {
+            const sumPaid = invoice.items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
+            invoice.paidAmount = Math.min(sumPaid, invoice.totalAmount);
+          }
+          invoice.balanceAmount = invoice.totalAmount - invoice.paidAmount;
+          if (invoice.balanceAmount <= 0) {
+            invoice.status = 'paid';
+          } else if (invoice.dueDate && new Date() > invoice.dueDate) {
+            invoice.status = 'overdue';
+          }
+        }
+        invoice.updatedBy = req.user._id;
+        await invoice.save();
+      }
+    }
+
+    const updated = await Payment.findById(payment._id)
+      .populate('invoice', 'invoiceNumber totalAmount')
+      .populate('student', 'name studentId')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    if (error.code === 11000) {
+      res.status(409).json({
+        success: false,
+        message: 'Payment with this number already exists for this college'
+      });
+    } else {
+      next(error);
+    }
+  }
+};
+
+const deletePayment = async (req, res, next) => {
+  try {
+    const payment = await Payment.findById(req.params.id);
+    if (!payment) {
+      return res.status(404).json({ success: false, message: 'Payment not found' });
+    }
+
+    // Revert account balance and unlink ledger if payment was completed
+    if (payment.status === 'completed') {
+      const ledger = await Ledger.findOne({
+        referenceId: payment._id,
+        referenceModel: 'Payment'
+      });
+      if (ledger) {
+        await Ledger.revertFromAccounts(ledger);
+        await Ledger.findByIdAndDelete(ledger._id);
+      }
+
+      // Cancel the income record linked to this payment (keep for history, exclude from reports)
+      await Income.findOneAndUpdate(
+        { payment: payment._id },
+        { isCancelled: true, updatedBy: req.user._id }
+      );
+
+      // Update invoice - recalculate from items (cap at totalAmount)
+      if (payment.invoice) {
+        const invoice = await Invoice.findById(payment.invoice);
+        if (invoice) {
+          if (invoice.taxCalculationMethod === 'total') {
+            const itemSumPaid = invoice.items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
+            invoice.paidAmount = Math.min(itemSumPaid + (invoice.taxPaidAmount || 0), invoice.totalAmount);
+          } else {
+            const sumPaid = invoice.items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
+            invoice.paidAmount = Math.min(sumPaid, invoice.totalAmount);
+          }
+          invoice.balanceAmount = invoice.totalAmount - invoice.paidAmount;
+          if (invoice.balanceAmount > 0 && invoice.status === 'paid') {
+            invoice.status = 'sent';
+          }
+          invoice.updatedBy = req.user._id;
+          await invoice.save();
+        }
+      }
+    }
+
+    await Payment.findByIdAndDelete(req.params.id);
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = {
+  // categories
+  getCategories,
+  getCategoryById,
+  createCategory,
+  updateCategory,
+  deleteCategory,
+  // income
+  getIncomes,
+  getIncomeById,
+  createIncome,
+  updateIncome,
+  deleteIncome,
+  // expense
+  getExpenses,
+  getExpenseById,
+  createExpense,
+  updateExpense,
+  deleteExpense,
+  // summary
+  getFinanceSummary,
+  // invoice
+  getInvoices,
+  getInvoiceById,
+  createInvoice,
+  updateInvoice,
+  deleteInvoice,
+  payInvoiceItems,
+  payInvoiceItems,
+  // saved invoice content
+  getSavedInvoiceContents,
+  getSavedInvoiceContentById,
+  createSavedInvoiceContent,
+  updateSavedInvoiceContent,
+  deleteSavedInvoiceContent,
+  // account
+  getAccounts,
+  getAccountById,
+  getAccountLedgers,
+  createAccount,
+  updateAccount,
+  deleteAccount,
+  // ledger
+  getLedgers,
+  getLedgerById,
+  createLedger,
+  updateLedger,
+  deleteLedger,
+  // payment
+  getPayments,
+  getPaymentById,
+  createPayment,
+  updatePayment,
+  deletePayment
+};
+
+
