@@ -31,6 +31,12 @@ const expenseSchema = new mongoose.Schema(
       type: String,
       trim: true
     },
+    recipient: {
+      name: { type: String, trim: true },
+      phone: { type: String, trim: true },
+      email: { type: String, trim: true, lowercase: true },
+      address: { type: String, trim: true }
+    },
     college: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'College'
@@ -42,6 +48,10 @@ const expenseSchema = new mongoose.Schema(
     notes: {
       type: String,
       trim: true
+    },
+    files: {
+      type: [{ type: String, trim: true }],
+      default: []
     },
     isCancelled: {
       type: Boolean,
@@ -84,7 +94,7 @@ expenseSchema.pre('save', async function (next) {
     }
   }
   
-  next();
+  //next();
 });
 
 // Handle account balance updates and ledger entries
@@ -97,7 +107,7 @@ expenseSchema.post('save', async function (doc, next) {
       // New expense
       if (doc.isCancelled) {
         // If new expense is created as cancelled, don't update account
-        return next();
+        return //next();
       }
 
       // New active expense - debit the account (decrease balance)
@@ -115,14 +125,16 @@ expenseSchema.post('save', async function (doc, next) {
       await Ledger.create({
         entryDate: doc.date,
         entryType: 'expense',
-        transactionType: 'debit',
-        account: account._id,
-        amount: doc.amount,
+        lines: [{
+          account: account._id,
+          transactionType: 'debit',
+          amount: doc.amount,
+          balanceAfter: account.balance
+        }],
         description: `Expense: ${doc.title}`,
         reference: doc.referenceNumber || doc._id.toString(),
         referenceId: doc._id,
         referenceModel: 'Expense',
-        balance: account.balance,
         category: doc.category,
         college: doc.college,
         notes: doc.notes,
@@ -163,14 +175,16 @@ expenseSchema.post('save', async function (doc, next) {
             await Ledger.create({
               entryDate: doc.date,
               entryType: 'expense',
-              transactionType: 'debit',
-              account: account._id,
-              amount: doc.amount,
+              lines: [{
+                account: account._id,
+                transactionType: 'debit',
+                amount: doc.amount,
+                balanceAfter: account.balance
+              }],
               description: `Expense: ${doc.title}`,
               reference: doc.referenceNumber || doc._id.toString(),
               referenceId: doc._id,
               referenceModel: 'Expense',
-              balance: account.balance,
               category: doc.category,
               college: doc.college,
               notes: doc.notes,
@@ -179,12 +193,12 @@ expenseSchema.post('save', async function (doc, next) {
             });
           }
         }
-        return next();
+        return //next();
       }
 
       // If expense is cancelled, don't process further
       if (doc.isCancelled) {
-        return next();
+        return //next();
       }
 
       // If amount or account changed, update balances
@@ -217,14 +231,16 @@ expenseSchema.post('save', async function (doc, next) {
           await Ledger.create({
             entryDate: doc.date,
             entryType: 'expense',
-            transactionType: 'debit',
-            account: account._id,
-            amount: doc.amount,
+            lines: [{
+              account: account._id,
+              transactionType: 'debit',
+              amount: doc.amount,
+              balanceAfter: account.balance
+            }],
             description: `Expense: ${doc.title}`,
             reference: doc.referenceNumber || doc._id.toString(),
             referenceId: doc._id,
             referenceModel: 'Expense',
-            balance: account.balance,
             category: doc.category,
             college: doc.college,
             notes: doc.notes,
@@ -249,7 +265,7 @@ expenseSchema.post('save', async function (doc, next) {
       }
     }
     
-    next();
+    //next();
   } catch (error) {
     next(error);
   }
@@ -277,7 +293,7 @@ expenseSchema.post('findOneAndDelete', async function (doc, next) {
       });
     }
     
-    next();
+    //next();
   } catch (error) {
     next(error);
   }
@@ -304,7 +320,7 @@ expenseSchema.post('deleteOne', async function (doc, next) {
       });
     }
     
-    next();
+    //next();
   } catch (error) {
     next(error);
   }
@@ -332,7 +348,7 @@ expenseSchema.pre('remove', async function (next) {
       });
     }
     
-    next();
+    //next();
   } catch (error) {
     next(error);
   }

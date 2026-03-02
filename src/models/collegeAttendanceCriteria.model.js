@@ -553,8 +553,7 @@ const collegeAttendanceCriteriaSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Indexes
-collegeAttendanceCriteriaSchema.index({ college: 1 }, { unique: true });
+// Indexes (college has unique: true in schema, so no separate college index needed)
 collegeAttendanceCriteriaSchema.index({ isActive: 1 });
 
 // Instance method to get expected check-in time as Date

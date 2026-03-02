@@ -18,7 +18,7 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
 
 const corsOptions =
   allowedOrigins.length === 0
-    ? { origin: '*', credentials: true }
+    ? { origin: true, credentials: true } // reflect request origin so credentials work from any origin
     : {
         origin: (origin, callback) => {
           if (!origin || allowedOrigins.includes(origin)) {

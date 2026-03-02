@@ -1,6 +1,8 @@
 const { validationResult } = require('express-validator');
 const College = require('../models/college.model');
 const User = require('../models/user.model');
+const { uploadToS3, deleteFromS3, generateFileName } = require('../utils/upload');
+const logger = require('../utils/logger');
 
 const handleValidation = (req, res) => {
   const errors = validationResult(req);
@@ -102,14 +104,92 @@ const updateCollege = async (req, res, next) => {
 
 const deleteCollege = async (req, res, next) => {
   try {
-    const college = await College.findByIdAndDelete(req.params.id);
+    const college = await College.findById(req.params.id);
     if (!college) {
       return res
         .status(404)
         .json({ success: false, message: 'College not found' });
     }
+
+    // Delete logo from S3 if it exists (logo is stored as folder/filename)
+    if (college.logo) {
+      try {
+        await deleteFromS3(college.logo);
+      } catch (error) {
+        logger.error('Failed to delete college logo from S3', { error: error.message });
+        // Continue with college deletion even if logo deletion fails
+      }
+    }
+
+    await College.findByIdAndDelete(req.params.id);
     res.status(204).send();
   } catch (error) {
+    next(error);
+  }
+};
+
+const uploadLogo = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No file provided'
+      });
+    }
+
+    // Validate file type (should be an image)
+    if (!req.file.mimetype.startsWith('image/')) {
+      return res.status(400).json({
+        success: false,
+        message: 'File must be an image'
+      });
+    }
+
+    const college = await College.findById(req.params.id);
+    if (!college) {
+      return res.status(404).json({
+        success: false,
+        message: 'College not found'
+      });
+    }
+
+    // Delete old logo from S3 if it exists (logo is stored as folder/filename)
+    if (college.logo) {
+      try {
+        await deleteFromS3(college.logo);
+      } catch (error) {
+        logger.error('Failed to delete old logo from S3', { error: error.message });
+        // Continue with new logo upload even if old logo deletion fails
+      }
+    }
+
+    // Upload new logo to S3; store path as folder/filename (e.g. logo/filename.jpg)
+    const folder = 'logo';
+    const fileName = generateFileName(req.file.originalname, folder);
+    const storedPath = await uploadToS3(
+      req.file.buffer,
+      fileName,
+      req.file.mimetype
+    );
+
+    college.logo = storedPath;
+    await college.save();
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const apiPrefix = require('../config/env').apiPrefix;
+    const logoUrl = `${baseUrl}${apiPrefix}/image/${storedPath}`;
+
+    res.status(200).json({
+      success: true,
+      message: 'Logo uploaded successfully',
+      data: {
+        college: college,
+        logoPath: storedPath,
+        logoUrl: logoUrl
+      }
+    });
+  } catch (error) {
+    logger.error('Upload logo error', { error: error.message });
     next(error);
   }
 };
@@ -119,6 +199,7 @@ module.exports = {
   getCollegeById,
   createCollege,
   updateCollege,
-  deleteCollege
+  deleteCollege,
+  uploadLogo
 };
 

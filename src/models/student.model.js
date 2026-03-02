@@ -47,6 +47,10 @@ const studentSchema = new mongoose.Schema(
       enum: ['male', 'female', 'other'],
       required: true
     },
+    image: {
+      type: String,
+      trim: true
+    },
     address: {
       street: {
         type: String,
@@ -168,7 +172,6 @@ studentSchema.index({ college: 1, studentId: 1 }, { unique: true });
 studentSchema.index({ college: 1 });
 studentSchema.index({ course: 1 });
 studentSchema.index({ enrollmentStatus: 1 });
-studentSchema.index({ email: 1 });
 studentSchema.index({ phone: 1 });
 
 // Virtual for age calculation

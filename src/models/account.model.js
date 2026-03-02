@@ -1,7 +1,28 @@
 const mongoose = require('mongoose');
 
-const accountTypes = ['bank', 'cash', 'credit-card', 'savings', 'current', 'other'];
-const accountStatuses = ['active', 'inactive', 'closed'];
+const accountTypes = [
+  'bank',
+  'cash',
+  'credit-card',
+  'savings',
+  'current',
+  'fixed-deposit',
+  'loan',
+  'overdraft',
+  'wallet',
+  'investment',
+  'petty-cash',
+  'other'
+];
+const accountStatuses = [
+  'active',
+  'inactive',
+  'closed',
+  'frozen',
+  'suspended',
+  'pending',
+  'archived'
+];
 
 const accountSchema = new mongoose.Schema(
   {

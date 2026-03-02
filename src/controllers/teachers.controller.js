@@ -224,6 +224,7 @@ const updateTeacher = async (req, res, next) => {
       'alternatePhone',
       'dateOfBirth',
       'gender',
+      'image',
       'address',
       'staffType',
       'department',

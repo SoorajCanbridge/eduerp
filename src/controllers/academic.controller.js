@@ -1,6 +1,7 @@
 const { validationResult } = require('express-validator');
 const AcademicConfig = require('../models/academicConfig.model');
 const AcademicCourse = require('../models/academicCourse.model');
+const analyticsService = require('../services/analytics.service');
 
 const handleValidation = (req, res) => {
   const errors = validationResult(req);
@@ -77,6 +78,10 @@ const createCourse = async (req, res, next) => {
       completedDate: req.body.completedDate,
       seatLimit: req.body.seatLimit,
       isActive: req.body.isActive
+    });
+
+    await analyticsService.recordAnalytics(req.user.college, course.createdAt, {
+      course: { created: 1, active: course.isActive ? 1 : 0, totalEnrolled: 1 }
     });
 
     res.status(201).json({ success: true, data: course });
@@ -164,6 +169,19 @@ const updateCourse = async (req, res, next) => {
     if (isActive !== undefined) course.isActive = isActive;
 
     await course.save();
+
+    if (completedDate !== undefined || isActive !== undefined) {
+      const inc = {};
+      if (completedDate !== undefined) inc.completed = 1;
+      if (isActive === false) inc.active = -1;
+      if (isActive === true) inc.active = 1;
+      if (Object.keys(inc).length) {
+        await analyticsService.recordAnalytics(course.college, new Date(), {
+          course: inc
+        });
+      }
+    }
+
     res.json({ success: true, data: course });
   } catch (error) {
     if (error.code === 11000) {

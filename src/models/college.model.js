@@ -56,6 +56,10 @@ const collegeSchema = new mongoose.Schema(
       type: Number,
       min: 1800,
       max: new Date().getFullYear()
+    },
+    logo: {
+      type: String,
+      trim: true
     }
   },
   { timestamps: true }

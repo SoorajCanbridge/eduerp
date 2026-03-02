@@ -39,9 +39,19 @@ const incomeSchema = new mongoose.Schema(
       type: String,
       trim: true
     },
+    recipient: {
+      name: { type: String, trim: true },
+      phone: { type: String, trim: true },
+      email: { type: String, trim: true, lowercase: true },
+      address: { type: String, trim: true }
+    },
     notes: {
       type: String,
       trim: true
+    },
+    files: {
+      type: [{ type: String, trim: true }],
+      default: []
     },
     isCancelled: {
       type: Boolean,
@@ -89,7 +99,7 @@ incomeSchema.pre('save', async function (next) {
     }
   }
   
-  next();
+  ////next();
 });
 
 // Handle account balance updates and ledger entries
@@ -102,11 +112,11 @@ incomeSchema.post('save', async function (doc, next) {
       // New income
       if (doc.isCancelled) {
         // If new income is created as cancelled, don't update account
-        return next();
+        return //next();
       }
       // Income linked to a payment: account and ledger already updated by payment flow
       if (doc.payment) {
-        return next();
+        return //next();
       }
 
       // New active income - credit the account (increase balance)
@@ -124,14 +134,16 @@ incomeSchema.post('save', async function (doc, next) {
       await Ledger.create({
         entryDate: doc.date,
         entryType: 'income',
-        transactionType: 'credit',
-        account: account._id,
-        amount: doc.amount,
+        lines: [{
+          account: account._id,
+          transactionType: 'credit',
+          amount: doc.amount,
+          balanceAfter: account.balance
+        }],
         description: `Income: ${doc.title}`,
         reference: doc.referenceNumber || doc._id.toString(),
         referenceId: doc._id,
         referenceModel: 'Income',
-        balance: account.balance,
         category: doc.category,
         student: doc.student,
         college: doc.college,
@@ -142,7 +154,7 @@ incomeSchema.post('save', async function (doc, next) {
       // Update operation
       // Income linked to payment: account/ledger are managed by payment flow
       if (doc.payment) {
-        return next();
+        return //next();
       }
 
       const oldAmount = this._originalAmount;
@@ -178,14 +190,16 @@ incomeSchema.post('save', async function (doc, next) {
             await Ledger.create({
               entryDate: doc.date,
               entryType: 'income',
-              transactionType: 'credit',
-              account: account._id,
-              amount: doc.amount,
+              lines: [{
+                account: account._id,
+                transactionType: 'credit',
+                amount: doc.amount,
+                balanceAfter: account.balance
+              }],
               description: `Income: ${doc.title}`,
               reference: doc.referenceNumber || doc._id.toString(),
               referenceId: doc._id,
               referenceModel: 'Income',
-              balance: account.balance,
               category: doc.category,
               student: doc.student,
               college: doc.college,
@@ -195,12 +209,12 @@ incomeSchema.post('save', async function (doc, next) {
             });
           }
         }
-        return next();
+        return //next();
       }
 
       // If income is cancelled, don't process further
       if (doc.isCancelled) {
-        return next();
+        return //next();
       }
 
       // If amount or account changed, update balances
@@ -233,14 +247,16 @@ incomeSchema.post('save', async function (doc, next) {
           await Ledger.create({
             entryDate: doc.date,
             entryType: 'income',
-            transactionType: 'credit',
-            account: account._id,
-            amount: doc.amount,
+            lines: [{
+              account: account._id,
+              transactionType: 'credit',
+              amount: doc.amount,
+              balanceAfter: account.balance
+            }],
             description: `Income: ${doc.title}`,
             reference: doc.referenceNumber || doc._id.toString(),
             referenceId: doc._id,
             referenceModel: 'Income',
-            balance: account.balance,
             category: doc.category,
             student: doc.student,
             college: doc.college,
@@ -266,7 +282,7 @@ incomeSchema.post('save', async function (doc, next) {
       }
     }
     
-    next();
+    ////next();
   } catch (error) {
     next(error);
   }
@@ -294,7 +310,7 @@ incomeSchema.post('findOneAndDelete', async function (doc, next) {
       });
     }
     
-    next();
+    ////next();
   } catch (error) {
     next(error);
   }
@@ -321,7 +337,7 @@ incomeSchema.post('deleteOne', async function (doc, next) {
       });
     }
     
-    next();
+    ////next();
   } catch (error) {
     next(error);
   }
@@ -349,7 +365,7 @@ incomeSchema.pre('remove', async function (next) {
       });
     }
     
-    next();
+    ////next();
   } catch (error) {
     next(error);
   }

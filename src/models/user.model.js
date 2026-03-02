@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
-const roles = ['admin', 'editor', 'viewer','user'];
+const roles = ['admin', 'editor', 'viewer', 'user'];
 
 const userSchema = new mongoose.Schema(
   {
@@ -24,6 +24,10 @@ const userSchema = new mongoose.Schema(
       minlength: 6,
       select: false
     },
+    phone: {
+      type: String,
+      trim: true
+    },
     role: {
       type: String,
       enum: roles,
@@ -32,10 +36,21 @@ const userSchema = new mongoose.Schema(
     college: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'College'
+    },
+    isActive: {
+      type: Boolean,
+      default: true
+    },
+    lastLoginAt: {
+      type: Date
     }
   },
   { timestamps: true }
 );
+
+userSchema.index({ college: 1, role: 1 });
+userSchema.index({ college: 1, isActive: 1 });
+userSchema.index({ email: 1 });
 
 userSchema.pre('save', async function hashPassword() {
   if (!this.isModified('password')) {
@@ -61,4 +76,5 @@ userSchema.methods.toJSON = function toJSON() {
 };
 
 module.exports = mongoose.model('User', userSchema);
+module.exports.roles = roles;
 

@@ -8,10 +8,15 @@ const studentRoutes = require('./students.routes');
 const teacherRoutes = require('./teachers.routes');
 const financeRoutes = require('./finance.routes');
 const collegeAttendanceCriteriaRoutes = require('./collegeAttendanceCriteria.routes');
+const analyticsRoutes = require('./analytics.routes');
+const uploadRoutes = require('./upload.routes');
+const imageRoutes = require('./image.routes');
 const env = require('../config/env');
 
 const router = express.Router();
 
+// Image route first (no auth) so /image/folder/file.jpg is not caught by /:id
+router.use(imageRoutes);
 router.use('/health', healthRoutes);
 router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
@@ -21,6 +26,8 @@ router.use('/students', studentRoutes);
 router.use('/teachers', teacherRoutes);
 router.use('/finance', financeRoutes);
 router.use('/attendance-criteria', collegeAttendanceCriteriaRoutes);
+router.use('/analytics', analyticsRoutes);
+router.use('/upload', uploadRoutes);
 
 const mountRoutes = (app) => {
   app.use(env.apiPrefix, router);

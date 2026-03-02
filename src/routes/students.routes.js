@@ -119,7 +119,12 @@ const createValidators = [
   body('isActive')
     .optional()
     .isBoolean()
-    .withMessage('isActive must be a boolean')
+    .withMessage('isActive must be a boolean'),
+  body('image')
+    .optional()
+    .trim()
+    .isString()
+    .withMessage('Image must be a valid path string')
 ];
 
 // Validation rules for updating a student
@@ -158,6 +163,11 @@ const updateValidators = [
     .optional()
     .isIn(genders)
     .withMessage('Gender must be one of: male, female, other'),
+  body('image')
+    .optional()
+    .trim()
+    .isString()
+    .withMessage('Image must be a valid path string'),
   body('address.city')
     .optional()
     .notEmpty()

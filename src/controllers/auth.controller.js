@@ -34,7 +34,8 @@ const register = async (req, res, next) => {
         .json({ success: false, message: 'Email already registered' });
     }
 
-    const user = await User.create({ name, email, password, role });
+    const college = req.body.college || null;
+    const user = await User.create({ name, email, password, role, college });
     const token = generateToken(user);
     attachAuthCookie(res, token);
 
@@ -48,7 +49,7 @@ const register = async (req, res, next) => {
 
 const login = async (req, res, next) => {
   if (handleValidation(req, res)) return;
-console.log(req.body);
+
   try {
     const { email, password } = req.body;
     const user = await User.findOne({ email }).select('+password');
@@ -66,6 +67,9 @@ console.log(req.body);
         .json({ success: false, message: 'Invalid credentials' });
     }
 
+    user.lastLoginAt = new Date();
+    await user.save({ validateBeforeSave: false });
+
     const token = generateToken(user);
     attachAuthCookie(res, token);
 
@@ -80,8 +84,14 @@ console.log(req.body);
 };
 
 const getProfile = async (req, res) => {
-  console.log(req.user,"profile");
-  res.json({ success: true, data: { user: req.user } });
+  const user = await User.findById(req.user._id)
+    .select('-password')
+    .populate('college', 'name code')
+    .lean();
+  if (!user) {
+    return res.status(401).json({ success: false, message: 'User no longer exists' });
+  }
+  res.json({ success: true, data: { user } });
 };
 
 const logout = (req, res) => {

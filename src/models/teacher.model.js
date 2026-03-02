@@ -49,6 +49,10 @@ const teacherSchema = new mongoose.Schema(
       enum: genders,
       required: true
     },
+    image: {
+      type: String,
+      trim: true
+    },
     address: {
       street: {
         type: String,
@@ -250,7 +254,6 @@ teacherSchema.index({ college: 1 });
 teacherSchema.index({ department: 1 });
 teacherSchema.index({ designation: 1 });
 teacherSchema.index({ employmentStatus: 1 });
-teacherSchema.index({ email: 1 });
 teacherSchema.index({ phone: 1 });
 teacherSchema.index({ courses: 1 });
 teacherSchema.index({ staffType: 1 });

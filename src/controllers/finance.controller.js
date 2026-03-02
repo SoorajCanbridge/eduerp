@@ -262,6 +262,19 @@ const createIncome = async (req, res, next) => {
       college: req.body.college || req.user.college,
       createdBy: req.user._id
     };
+    if (Array.isArray(data.files)) {
+      data.files = data.files.filter((p) => typeof p === 'string' && p.trim());
+    } else {
+      data.files = [];
+    }
+    if (req.body.recipient && typeof req.body.recipient === 'object') {
+      data.recipient = {
+        name: req.body.recipient.name != null ? String(req.body.recipient.name).trim() : undefined,
+        phone: req.body.recipient.phone != null ? String(req.body.recipient.phone).trim() : undefined,
+        email: req.body.recipient.email != null ? String(req.body.recipient.email).trim().toLowerCase() : undefined,
+        address: req.body.recipient.address != null ? String(req.body.recipient.address).trim() : undefined
+      };
+    }
 
     const income = await Income.create(data);
     const populated = await Income.findById(income._id)
@@ -313,13 +326,26 @@ const updateIncome = async (req, res, next) => {
       'student',
       'college',
       'referenceNumber',
+      'recipient',
       'notes',
+      'files',
       'isCancelled'
     ];
 
     updatableFields.forEach((field) => {
       if (req.body[field] !== undefined) {
-        income[field] = req.body[field];
+        if (field === 'files' && Array.isArray(req.body[field])) {
+          income[field] = req.body[field].filter((p) => typeof p === 'string' && p.trim());
+        } else if (field === 'recipient' && typeof req.body[field] === 'object' && req.body[field] !== null) {
+          income[field] = {
+            name: req.body[field].name != null ? String(req.body[field].name).trim() : undefined,
+            phone: req.body[field].phone != null ? String(req.body[field].phone).trim() : undefined,
+            email: req.body[field].email != null ? String(req.body[field].email).trim().toLowerCase() : undefined,
+            address: req.body[field].address != null ? String(req.body[field].address).trim() : undefined
+          };
+        } else {
+          income[field] = req.body[field];
+        }
       }
     });
 
@@ -459,6 +485,19 @@ const createExpense = async (req, res, next) => {
       college: req.body.college || req.user.college,
       createdBy: req.user._id
     };
+    if (Array.isArray(data.files)) {
+      data.files = data.files.filter((p) => typeof p === 'string' && p.trim());
+    } else {
+      data.files = [];
+    }
+    if (req.body.recipient && typeof req.body.recipient === 'object') {
+      data.recipient = {
+        name: req.body.recipient.name != null ? String(req.body.recipient.name).trim() : undefined,
+        phone: req.body.recipient.phone != null ? String(req.body.recipient.phone).trim() : undefined,
+        email: req.body.recipient.email != null ? String(req.body.recipient.email).trim().toLowerCase() : undefined,
+        address: req.body.recipient.address != null ? String(req.body.recipient.address).trim() : undefined
+      };
+    }
 
     const expense = await Expense.create(data);
     const populated = await Expense.findById(expense._id)
@@ -509,13 +548,26 @@ const updateExpense = async (req, res, next) => {
       'vendor',
       'college',
       'referenceNumber',
+      'recipient',
       'notes',
+      'files',
       'isCancelled'
     ];
 
     updatableFields.forEach((field) => {
       if (req.body[field] !== undefined) {
-        expense[field] = req.body[field];
+        if (field === 'files' && Array.isArray(req.body[field])) {
+          expense[field] = req.body[field].filter((p) => typeof p === 'string' && p.trim());
+        } else if (field === 'recipient' && typeof req.body[field] === 'object' && req.body[field] !== null) {
+          expense[field] = {
+            name: req.body[field].name != null ? String(req.body[field].name).trim() : undefined,
+            phone: req.body[field].phone != null ? String(req.body[field].phone).trim() : undefined,
+            email: req.body[field].email != null ? String(req.body[field].email).trim().toLowerCase() : undefined,
+            address: req.body[field].address != null ? String(req.body[field].address).trim() : undefined
+          };
+        } else {
+          expense[field] = req.body[field];
+        }
       }
     });
 
@@ -1075,8 +1127,8 @@ const payInvoiceItems = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Invoice not found' });
     }
 
-    const { itemPayments } = req.body; // Array of { itemIndex, amount }
-    
+    const { itemPayments, account: accountId, paymentDate, paymentMethod, notes } = req.body;
+
     if (!Array.isArray(itemPayments) || itemPayments.length === 0) {
       return res.status(400).json({
         success: false,
@@ -1095,7 +1147,7 @@ const payInvoiceItems = async (req, res, next) => {
       if (amount < 0) {
         throw new Error(`Payment amount must be positive`);
       }
-      
+
       const item = invoice.items[itemIndex];
       const itemTotal = getItemTotal(item);
       const newPaidAmount = (item.paidAmount || 0) + amount;
@@ -1104,16 +1156,14 @@ const payInvoiceItems = async (req, res, next) => {
 
     // Recalculate invoice paidAmount from items (cap at totalAmount)
     if (invoice.taxCalculationMethod === 'total') {
-      // For total-level tax: items + taxPaidAmount
       const itemSumPaid = invoice.items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
       invoice.paidAmount = Math.min(itemSumPaid + (invoice.taxPaidAmount || 0), invoice.totalAmount);
     } else {
-      // Product-level tax: tax is included in item.paidAmount
       const sumPaid = invoice.items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
       invoice.paidAmount = Math.min(sumPaid, invoice.totalAmount);
     }
     invoice.balanceAmount = invoice.totalAmount - invoice.paidAmount;
-    
+
     // Update status based on balance
     if (invoice.balanceAmount <= 0 && invoice.status === 'sent') {
       invoice.status = 'paid';
@@ -1129,6 +1179,72 @@ const payInvoiceItems = async (req, res, next) => {
     invoice.updatedBy = req.user._id;
     await invoice.save();
 
+    const totalPaymentAmount = itemPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+    const resolvedAccountId = accountId || invoice.account;
+    let payment = null;
+
+    if (totalPaymentAmount > 0 && resolvedAccountId) {
+      const account = await Account.findById(resolvedAccountId);
+      if (!account) {
+        return res.status(404).json({ success: false, message: 'Account not found' });
+      }
+      const collegeId = invoice.college || req.user.college;
+      if (account.college && account.college.toString() !== collegeId.toString()) {
+        return res.status(400).json({ success: false, message: 'Account does not belong to invoice college' });
+      }
+
+      payment = await Payment.create({
+        paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+        amount: totalPaymentAmount,
+        paymentMethod: paymentMethod || 'cash',
+        status: 'completed',
+        account: account._id,
+        invoice: invoice._id,
+        student: invoice.student,
+        college: collegeId,
+        notes: notes || `Invoice ${invoice.invoiceNumber || invoice._id} item payment`,
+        createdBy: req.user._id
+      });
+
+      account.balance += totalPaymentAmount;
+      account.updatedBy = req.user._id;
+      await account.save();
+
+      const paymentsCategory = await getOrCreatePaymentsCategory(collegeId, req.user._id);
+      const paymentLedger = await Ledger.create({
+        entryDate: payment.paymentDate,
+        entryType: 'payment',
+        lines: [{
+          account: account._id,
+          transactionType: 'credit',
+          amount: payment.amount,
+          balanceAfter: account.balance
+        }],
+        description: `Payment received: ${payment.paymentNumber}`,
+        reference: payment.paymentNumber,
+        referenceId: payment._id,
+        referenceModel: 'Payment',
+        category: paymentsCategory._id,
+        student: payment.student,
+        college: collegeId,
+        createdBy: req.user._id
+      });
+      await Ledger.applyToAccounts(paymentLedger);
+      await Income.create({
+        title: `Payment: ${payment.paymentNumber}`,
+        amount: payment.amount,
+        date: payment.paymentDate,
+        category: paymentsCategory._id,
+        account: payment.account,
+        student: payment.student,
+        college: collegeId,
+        referenceNumber: payment.paymentNumber,
+        notes: payment.notes,
+        payment: payment._id,
+        createdBy: req.user._id
+      });
+    }
+
     const updated = await Invoice.findById(invoice._id)
       .populate('student', 'name studentId')
       .populate('account', 'name accountType')
@@ -1137,7 +1253,15 @@ const payInvoiceItems = async (req, res, next) => {
       .populate('createdBy', 'name email')
       .populate('updatedBy', 'name email');
 
-    res.json({ success: true, data: updated });
+    const response = { success: true, data: updated };
+    if (payment) {
+      response.payment = await Payment.findById(payment._id)
+        .populate('account', 'name accountType')
+        .populate('invoice', 'invoiceNumber totalAmount')
+        .populate('student', 'name studentId')
+        .populate('college', 'name code');
+    }
+    res.json(response);
   } catch (error) {
     if (error.message.includes('Invalid item index') || error.message.includes('Payment amount')) {
       res.status(400).json({ success: false, message: error.message });
@@ -1462,16 +1586,32 @@ const createAccount = async (req, res, next) => {
 
   try {
     const collegeId = req.body.college || req.user.college;
+
+    // Derive balance: if explicit balance is not provided but openingBalance is,
+    // use openingBalance as the initial balance so account.balance is in sync.
+    const hasBalance = req.body.balance != null;
+    const hasOpeningBalance = req.body.openingBalance != null;
+    const initialBalance = hasBalance
+      ? Number(req.body.balance)
+      : hasOpeningBalance
+      ? Number(req.body.openingBalance)
+      : 0;
+      console.log(req.body);
+console.log(initialBalance);
+console.log(hasBalance);
+console.log(hasOpeningBalance);
     const data = {
       ...req.body,
+      balance: initialBalance,
       college: collegeId,
       createdBy: req.user._id
     };
-
+console.log(data);
     const account = await Account.create(data);
+console.log(account);
 
     // Link account to ledger: create opening balance entry so every account has at least one ledger record
-    const openingAmount = req.body.balance != null ? Number(req.body.balance) : (req.body.openingBalance != null ? Number(req.body.openingBalance) : 0);
+    const openingAmount = initialBalance;
     const openingDate = req.body.openingBalanceDate ? new Date(req.body.openingBalanceDate) : new Date();
     const transactionType = openingAmount >= 0 ? 'credit' : 'debit';
     const amount = Math.abs(openingAmount);
@@ -1839,7 +1979,10 @@ const updateLedger = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Ledger entry not found' });
     }
 
-    if (req.body.lines !== undefined && Array.isArray(req.body.lines) && req.body.lines.length >= 1) {
+    if (req.body.lines !== undefined) {
+      if (!Array.isArray(req.body.lines) || req.body.lines.length < 1) {
+        return res.status(400).json({ success: false, message: 'At least one line (account, transactionType, amount) is required' });
+      }
       await Ledger.revertFromAccounts(ledger);
       const builtLines = [];
       for (const line of req.body.lines) {
@@ -2125,6 +2268,7 @@ const createPayment = async (req, res, next) => {
       account.updatedBy = req.user._id;
       await account.save();
 
+      const paymentsCategory = await getOrCreatePaymentsCategory(payment.college, req.user._id);
       const paymentLedger = await Ledger.create({
         entryDate: payment.paymentDate,
         entryType: 'payment',
@@ -2138,6 +2282,7 @@ const createPayment = async (req, res, next) => {
         reference: payment.paymentNumber,
         referenceId: payment._id,
         referenceModel: 'Payment',
+        category: paymentsCategory._id,
         student: payment.student,
         college: payment.college,
         createdBy: req.user._id
@@ -2145,7 +2290,6 @@ const createPayment = async (req, res, next) => {
       await Ledger.applyToAccounts(paymentLedger);
 
       // Record payment as income in Finance (Payments category) for tracking and reports
-      const paymentsCategory = await getOrCreatePaymentsCategory(payment.college, req.user._id);
       await Income.create({
         title: `Payment: ${payment.paymentNumber}`,
         amount: payment.amount,
@@ -2235,6 +2379,7 @@ const updatePayment = async (req, res, next) => {
       } else if (oldStatus !== 'completed' && payment.status === 'completed') {
         // Apply new transaction
         account.balance += payment.amount;
+        const paymentsCategory = await getOrCreatePaymentsCategory(payment.college, req.user._id);
         const paymentLedger = await Ledger.create({
           entryDate: payment.paymentDate,
           entryType: 'payment',
@@ -2248,13 +2393,13 @@ const updatePayment = async (req, res, next) => {
           reference: payment.paymentNumber,
           referenceId: payment._id,
           referenceModel: 'Payment',
+          category: paymentsCategory._id,
           student: payment.student,
           college: payment.college,
           createdBy: req.user._id
         });
         await Ledger.applyToAccounts(paymentLedger);
         // Record payment as income (Payments category)
-        const paymentsCategory = await getOrCreatePaymentsCategory(payment.college, req.user._id);
         await Income.create({
           title: `Payment: ${payment.paymentNumber}`,
           amount: payment.amount,
@@ -2283,12 +2428,14 @@ const updatePayment = async (req, res, next) => {
         });
         if (ledger) {
           await Ledger.revertFromAccounts(ledger);
+          const paymentsCategory = await getOrCreatePaymentsCategory(payment.college, req.user._id);
           ledger.lines = [{
             account: account._id,
             transactionType: 'credit',
             amount: payment.amount,
             balanceAfter: account.balance
           }];
+          ledger.category = paymentsCategory._id;
           ledger.updatedBy = req.user._id;
           await ledger.save();
           await Ledger.applyToAccounts(ledger);

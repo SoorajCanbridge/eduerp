@@ -2,6 +2,7 @@ const { validationResult } = require('express-validator');
 const Student = require('../models/student.model');
 const AcademicCourse = require('../models/academicCourse.model');
 const College = require('../models/college.model');
+const analyticsService = require('../services/analytics.service');
 
 const handleValidation = (req, res) => {
   const errors = validationResult(req);
@@ -215,6 +216,18 @@ const createStudent = async (req, res, next) => {
     };
 
     const student = await Student.create(studentData);
+
+    await analyticsService.recordAnalytics(student.college, student.enrollmentDate || student.createdAt, {
+      student: {
+        enrolled: 1,
+        active: student.enrollmentStatus === 'enrolled' ? 1 : 0,
+        ...(student.enrollmentStatus === 'graduated' && { graduated: 1 }),
+        ...(student.enrollmentStatus === 'dropped' && { dropped: 1 }),
+        ...(student.enrollmentStatus === 'suspended' && { suspended: 1 }),
+        ...(student.enrollmentStatus === 'transferred' && { transferred: 1 })
+      }
+    });
+
     const populatedStudent = await Student.findById(student._id)
       .populate('college', 'name code')
       .populate('course', 'name batch levelA levelB levelC')
@@ -253,6 +266,7 @@ const updateStudent = async (req, res, next) => {
       'alternatePhone',
       'dateOfBirth',
       'gender',
+      'image',
       'address',
       'rollNumber',
       'course',
@@ -264,6 +278,8 @@ const updateStudent = async (req, res, next) => {
       'documents',
       'isActive'
     ];
+
+    const previousEnrollmentStatus = student.enrollmentStatus;
 
     updatableFields.forEach((field) => {
       if (req.body[field] !== undefined) {
@@ -282,6 +298,13 @@ const updateStudent = async (req, res, next) => {
     });
 
     student.updatedBy = req.user._id;
+
+    const newStatus = req.body.enrollmentStatus;
+
+    if (newStatus !== undefined && newStatus !== previousEnrollmentStatus) {
+      const inc = { [newStatus]: 1, active: newStatus === 'enrolled' ? 1 : -1 };
+      await analyticsService.recordAnalytics(student.college, new Date(), { student: inc });
+    }
 
     // If course is being changed, verify new course exists and has seats
     if (req.body.course && req.body.course !== student.course.toString()) {

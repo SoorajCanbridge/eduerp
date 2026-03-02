@@ -5,9 +5,11 @@ const {
   getCollegeById,
   createCollege,
   updateCollege,
-  deleteCollege
+  deleteCollege,
+  uploadLogo
 } = require('../controllers/colleges.controller');
 const auth = require('../middleware/auth');
+const { uploadSingle } = require('../middleware/upload');
 
 const router = express.Router();
 
@@ -93,6 +95,7 @@ router.get('/:id', getCollegeById);
 router.post('/', createValidators, createCollege);
 router.put('/:id', updateValidators, updateCollege);
 router.delete('/:id', deleteCollege);
+router.post('/:id/logo', uploadSingle('logo'), uploadLogo);
 
 module.exports = router;
 

@@ -62,7 +62,20 @@ const categoryTypes = ['income', 'expense', 'both'];
 const paymentMethods = ['cash', 'bank-transfer', 'upi', 'cheque', 'card', 'other'];
 const invoiceStatuses = ['draft', 'sent', 'paid', 'overdue', 'cancelled'];
 const taxCalculationMethods = ['product', 'total'];
-const accountTypes = ['bank', 'cash', 'credit-card', 'savings', 'current', 'other'];
+const accountTypes = [
+  'bank',
+  'cash',
+  'credit-card',
+  'savings',
+  'current',
+  'fixed-deposit',
+  'loan',
+  'overdraft',
+  'wallet',
+  'investment',
+  'petty-cash',
+  'other'
+];
 const accountStatuses = ['active', 'inactive', 'closed'];
 const transactionTypes = ['debit', 'credit'];
 const entryTypes = ['income', 'expense', 'transfer', 'payment', 'invoice', 'adjustment', 'opening'];
@@ -142,9 +155,36 @@ const incomeCreateValidators = [
   body('referenceNumber')
     .optional()
     .trim(),
+  body('recipient')
+    .optional()
+    .isObject()
+    .withMessage('recipient must be an object'),
+  body('recipient.name')
+    .optional()
+    .trim(),
+  body('recipient.phone')
+    .optional()
+    .trim(),
+  body('recipient.email')
+    .optional()
+    .trim()
+    .isEmail()
+    .withMessage('recipient email must be valid'),
+  body('recipient.address')
+    .optional()
+    .trim(),
   body('notes')
     .optional()
     .trim(),
+  body('files')
+    .optional()
+    .isArray()
+    .withMessage('files must be an array of path strings'),
+  body('files.*')
+    .optional()
+    .trim()
+    .isString()
+    .withMessage('Each file must be a path string'),
   body('isCancelled')
     .optional()
     .isBoolean()
@@ -184,9 +224,36 @@ const incomeUpdateValidators = [
   body('referenceNumber')
     .optional()
     .trim(),
+  body('recipient')
+    .optional()
+    .isObject()
+    .withMessage('recipient must be an object'),
+  body('recipient.name')
+    .optional()
+    .trim(),
+  body('recipient.phone')
+    .optional()
+    .trim(),
+  body('recipient.email')
+    .optional()
+    .trim()
+    .isEmail()
+    .withMessage('recipient email must be valid'),
+  body('recipient.address')
+    .optional()
+    .trim(),
   body('notes')
     .optional()
     .trim(),
+  body('files')
+    .optional()
+    .isArray()
+    .withMessage('files must be an array of path strings'),
+  body('files.*')
+    .optional()
+    .trim()
+    .isString()
+    .withMessage('Each file must be a path string'),
   body('isCancelled')
     .optional()
     .isBoolean()
@@ -215,6 +282,24 @@ const expenseCreateValidators = [
   body('vendor')
     .optional()
     .trim(),
+  body('recipient')
+    .optional()
+    .isObject()
+    .withMessage('recipient must be an object'),
+  body('recipient.name')
+    .optional()
+    .trim(),
+  body('recipient.phone')
+    .optional()
+    .trim(),
+  body('recipient.email')
+    .optional()
+    .trim()
+    .isEmail()
+    .withMessage('recipient email must be valid'),
+  body('recipient.address')
+    .optional()
+    .trim(),
   body('college')
     .optional()
     .isMongoId()
@@ -225,6 +310,15 @@ const expenseCreateValidators = [
   body('notes')
     .optional()
     .trim(),
+  body('files')
+    .optional()
+    .isArray()
+    .withMessage('files must be an array of path strings'),
+  body('files.*')
+    .optional()
+    .trim()
+    .isString()
+    .withMessage('Each file must be a path string'),
   body('isCancelled')
     .optional()
     .isBoolean()
@@ -256,6 +350,24 @@ const expenseUpdateValidators = [
   body('vendor')
     .optional()
     .trim(),
+  body('recipient')
+    .optional()
+    .isObject()
+    .withMessage('recipient must be an object'),
+  body('recipient.name')
+    .optional()
+    .trim(),
+  body('recipient.phone')
+    .optional()
+    .trim(),
+  body('recipient.email')
+    .optional()
+    .trim()
+    .isEmail()
+    .withMessage('recipient email must be valid'),
+  body('recipient.address')
+    .optional()
+    .trim(),
   body('college')
     .optional()
     .isMongoId()
@@ -266,6 +378,15 @@ const expenseUpdateValidators = [
   body('notes')
     .optional()
     .trim(),
+  body('files')
+    .optional()
+    .isArray()
+    .withMessage('files must be an array of path strings'),
+  body('files.*')
+    .optional()
+    .trim()
+    .isString()
+    .withMessage('Each file must be a path string'),
   body('isCancelled')
     .optional()
     .isBoolean()
@@ -431,7 +552,22 @@ const payInvoiceItemsValidators = [
     .withMessage('itemIndex must be a non-negative integer'),
   body('itemPayments.*.amount')
     .isFloat({ min: 0 })
-    .withMessage('Payment amount must be a positive number')
+    .withMessage('Payment amount must be a positive number'),
+  body('account')
+    .optional()
+    .isMongoId()
+    .withMessage('Account must be a valid Mongo ID when recording payment'),
+  body('paymentDate')
+    .optional()
+    .isISO8601()
+    .withMessage('Payment date must be a valid ISO date'),
+  body('paymentMethod')
+    .optional()
+    .isIn(paymentMethods)
+    .withMessage('Payment method must be a valid method'),
+  body('notes')
+    .optional()
+    .trim()
 ];
 
 // SAVED INVOICE CONTENT validators
