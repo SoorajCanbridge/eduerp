@@ -8,7 +8,7 @@
 | **edit** | Full access: view + create + update + delete. |
 | **none** | No access. Omit the permission or set action to `none`. |
 
-Resources: `academic`, `students`, `staff`, `attendance`, `fees`, `invoice`, `payments`, `payrolls`, `finance`, `settings`, `team`.
+Resources: `academic`, `students`, `staff`, `attendance`, `fees`, `invoice`, `payments`, `payroll`, `finance`, `settings`, `team`.
 
 ---
 
@@ -114,7 +114,7 @@ Resources: `academic`, `students`, `staff`, `attendance`, `fees`, `invoice`, `pa
     { "resource": "fees", "action": "edit" },
     { "resource": "invoice", "action": "edit" },
     { "resource": "payments", "action": "edit" },
-    { "resource": "payrolls", "action": "edit" },
+    { "resource": "payroll", "action": "edit" },
     { "resource": "finance", "action": "edit" },
     { "resource": "settings", "action": "edit" },
     { "resource": "team", "action": "edit" }

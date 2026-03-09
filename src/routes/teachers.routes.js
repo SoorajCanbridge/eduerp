@@ -738,67 +738,67 @@ router.post('/attendance/:id/regularize', [
 ], regularizeTeacherAttendance);
 
 // PAYROLL routes (must be before /:id route to avoid route conflicts)
-router.get('/payroll', requirePermission('payrolls', 'view'), getPayrolls);
-router.get('/payroll/ytd', requirePermission('payrolls', 'view'), getPayrollYTD);
+router.get('/payroll', requirePermission('payroll', 'view'), getPayrolls);
+router.get('/payroll/ytd', requirePermission('payroll', 'view'), getPayrollYTD);
 router.get(
   '/payroll/:id',
-  requirePermission('payrolls', 'view'),
+  requirePermission('payroll', 'view'),
   getPayrollById
 );
 router.post(
   '/payroll/generate',
-  requirePermission('payrolls', 'edit'),
+  requirePermission('payroll', 'edit'),
   payrollGenerateValidators,
   generatePayroll
 );
 router.put(
   '/payroll/:id',
-  requirePermission('payrolls', 'edit'),
+  requirePermission('payroll', 'edit'),
   payrollUpdateValidators,
   updatePayroll
 );
 router.post(
   '/payroll/:id/pay',
-  requirePermission('payrolls', 'edit'),
+  requirePermission('payroll', 'edit'),
   payrollPaymentValidators,
   processPayrollPayment
 );
 router.delete(
   '/payroll/:id',
-  requirePermission('payrolls', 'edit'),
+  requirePermission('payroll', 'edit'),
   deletePayroll
 );
 // Payroll approval workflow
 router.post('/payroll/:id/approve', [
-  requirePermission('payrolls', 'edit'),
+  requirePermission('payroll', 'edit'),
   body('comments').optional().trim(),
   body('level').optional().isInt({ min: 1 }).withMessage('Level must be a positive integer')
 ], approvePayroll);
 router.post('/payroll/:id/reject', [
-  requirePermission('payrolls', 'edit'),
+  requirePermission('payroll', 'edit'),
   body('comments').notEmpty().withMessage('Rejection reason is required').trim(),
   body('level').optional().isInt({ min: 1 }).withMessage('Level must be a positive integer')
 ], rejectPayroll);
 // Payroll reversal
 router.post('/payroll/:id/reverse', [
-  requirePermission('payrolls', 'edit'),
+  requirePermission('payroll', 'edit'),
   body('reason').optional().trim()
 ], reversePayroll);
 // Payroll hold/unhold
 router.post('/payroll/:id/hold', [
-  requirePermission('payrolls', 'edit'),
+  requirePermission('payroll', 'edit'),
   body('reason').optional().trim(),
   body('holdFrom').optional().isISO8601().withMessage('Hold from date must be a valid ISO date'),
   body('holdTo').optional().isISO8601().withMessage('Hold to date must be a valid ISO date')
 ], holdPayroll);
 router.post(
   '/payroll/:id/unhold',
-  requirePermission('payrolls', 'edit'),
+  requirePermission('payroll', 'edit'),
   unholdPayroll
 );
 // Payment splits
 router.post('/payroll/:id/payment-split', [
-  requirePermission('payrolls', 'edit'),
+  requirePermission('payroll', 'edit'),
   body('amount').isFloat({ min: 0 }).withMessage('Amount must be a positive number'),
   body('paymentDate').isISO8601().withMessage('Payment date must be a valid ISO date'),
   body('paymentMethod').optional().isIn(paymentMethods).withMessage('Payment method must be valid'),
@@ -806,7 +806,7 @@ router.post('/payroll/:id/payment-split', [
   body('transactionReference').optional().trim()
 ], addPaymentSplit);
 router.put('/payroll/:id/payment-split/:splitId', [
-  requirePermission('payrolls', 'edit'),
+  requirePermission('payroll', 'edit'),
   body('amount').optional().isFloat({ min: 0 }).withMessage('Amount must be a positive number'),
   body('paymentDate').optional().isISO8601().withMessage('Payment date must be a valid ISO date'),
   body('paymentMethod').optional().isIn(paymentMethods).withMessage('Payment method must be valid'),
@@ -817,11 +817,11 @@ router.put('/payroll/:id/payment-split/:splitId', [
 // Pay slip
 router.post(
   '/payroll/:id/payslip/generate',
-  requirePermission('payrolls', 'edit'),
+  requirePermission('payroll', 'edit'),
   generatePaySlip
 );
 router.post('/payroll/:id/payslip/sent', [
-  requirePermission('payrolls', 'edit'),
+  requirePermission('payroll', 'edit'),
   body('sentTo').optional().trim()
 ], markPaySlipSent);
 

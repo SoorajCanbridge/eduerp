@@ -2,7 +2,7 @@ const Role = require('../models/role.model');
 
 /**
  * Permission resources (view = get only, edit = create/update/delete):
- * academic, students, staff, attendance, fees, invoice, payments, payrolls, finance, settings, team
+ * academic, students, staff, attendance, fees, invoice, payments, payroll, finance, settings, team
  */
 const OWNER_ROLE_RESOURCES = [
   'Main',
@@ -13,7 +13,7 @@ const OWNER_ROLE_RESOURCES = [
   'fees',
   'invoice',
   'payments',
-  'payrolls',
+  'payroll',
   'finance',
   'settings',
   'team'
@@ -32,7 +32,7 @@ const getOwnerPermissions = () =>
 const DEFAULT_ROLE_NAME = 'user';
 
 /**
- * Default "user" role: Academics, Students, Staff, Fees, Invoice, Payments, Payrolls, Finance, Settings, Team.
+ * Default "user" role: Academics, Students, Staff, Fees, Invoice, Payments, Payroll, Finance, Settings, Team.
  * All as view-only when no role is provided on signup/create user.
  */
 const DEFAULT_ROLE_PERMISSIONS = [
@@ -43,7 +43,7 @@ const DEFAULT_ROLE_PERMISSIONS = [
   { resource: 'fees', action: 'view' },
   { resource: 'invoice', action: 'view' },
   { resource: 'payments', action: 'view' },
-  { resource: 'payrolls', action: 'view' },
+  { resource: 'payroll', action: 'view' },
   { resource: 'finance', action: 'view' },
   { resource: 'settings', action: 'view' },
   { resource: 'team', action: 'view' }
