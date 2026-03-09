@@ -11,6 +11,7 @@ const {
   promoteLevelCValue
 } = require('../controllers/academic.controller');
 const auth = require('../middleware/auth');
+const { requirePermission } = require('../middleware/permissions');
 
 const router = express.Router();
 
@@ -207,7 +208,12 @@ const listValidators = [
     .toBoolean()
 ];
 
-router.put('/config/:collegeId', configValidators, upsertConfig);
+router.put(
+  '/config/:collegeId',
+  requirePermission('academic', 'edit'),
+  configValidators,
+  upsertConfig
+);
 router.get(
   '/config/:collegeId',
   [
@@ -215,6 +221,7 @@ router.get(
       .isMongoId()
       .withMessage('Valid collegeId is required')
   ],
+  requirePermission('academic', 'view'),
   getConfigByCollege
 );
 
@@ -222,11 +229,17 @@ router.get(
 
 router.post(
   '/config/:id/promote-level-c',
+  requirePermission('academic', 'edit'),
   promoteLevelCValue
 );
 
-router.get('/courses', listValidators, listCourses);
-router.post('/courses', courseCreateValidators, createCourse);
+router.get('/courses', requirePermission('academic', 'view'), listValidators, listCourses);
+router.post(
+  '/courses',
+  requirePermission('academic', 'edit'),
+  courseCreateValidators,
+  createCourse
+);
 router.get(
   '/courses/:id',
   [
@@ -234,9 +247,15 @@ router.get(
       .isMongoId()
       .withMessage('Valid course id is required')
   ],
+  requirePermission('academic', 'view'),
   getCourseById
 );
-router.put('/courses/:id', courseUpdateValidators, updateCourse);
+router.put(
+  '/courses/:id',
+  requirePermission('academic', 'edit'),
+  courseUpdateValidators,
+  updateCourse
+);
 router.delete(
   '/courses/:id',
   [
@@ -244,6 +263,7 @@ router.delete(
       .isMongoId()
       .withMessage('Valid course id is required')
   ],
+  requirePermission('academic', 'edit'),
   deleteCourse
 );
 

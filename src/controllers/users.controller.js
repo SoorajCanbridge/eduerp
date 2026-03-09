@@ -1,5 +1,6 @@
 const { validationResult } = require('express-validator');
 const User = require('../models/user.model');
+const { getDefaultRoleId } = require('../utils/permissions');
 
 const handleValidation = (req, res) => {
   const errors = validationResult(req);
@@ -32,6 +33,7 @@ const getAllUsers = async (req, res, next) => {
       User.find(filters)
         .select('-password')
         .populate('college', 'name code')
+        .populate('role', 'name description permissions')
         .sort(sort)
         .skip(skip)
         .limit(limitNum)
@@ -59,7 +61,11 @@ const getUserById = async (req, res, next) => {
     const conditions = { _id: req.params.id };
     if (req.user.college) conditions.college = req.user.college;
 
-    const user = await User.findOne(conditions).select('-password').populate('college', 'name code').lean();
+    const user = await User.findOne(conditions)
+      .select('-password')
+      .populate('college', 'name code')
+      .populate('role', 'name description permissions')
+      .lean();
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -75,9 +81,16 @@ const createUser = async (req, res, next) => {
   try {
     const payload = { ...req.body };
     payload.college = req.user.college;
+    if (payload.role === undefined || payload.role === null || payload.role === '') {
+      payload.role = await getDefaultRoleId();
+    }
 
     const user = await User.create(payload);
-    const data = await User.findById(user._id).select('-password').populate('college', 'name code').lean();
+    const data = await User.findById(user._id)
+      .select('-password')
+      .populate('college', 'name code')
+      .populate('role', 'name description permissions')
+      .lean();
     res.status(201).json({ success: true, data });
   } catch (error) {
     if (error.code === 11000) {
@@ -109,7 +122,11 @@ const updateUser = async (req, res, next) => {
     }
 
     await user.save();
-    const data = await User.findById(user._id).select('-password').populate('college', 'name code').lean();
+    const data = await User.findById(user._id)
+      .select('-password')
+      .populate('college', 'name code')
+      .populate('role', 'name description permissions')
+      .lean();
     res.json({ success: true, data });
   } catch (error) {
     if (error.code === 11000) {

@@ -11,6 +11,7 @@ const collegeAttendanceCriteriaRoutes = require('./collegeAttendanceCriteria.rou
 const analyticsRoutes = require('./analytics.routes');
 const uploadRoutes = require('./upload.routes');
 const imageRoutes = require('./image.routes');
+const roleRoutes = require('./roles.routes');
 const env = require('../config/env');
 
 const router = express.Router();
@@ -20,6 +21,7 @@ router.use(imageRoutes);
 router.use('/health', healthRoutes);
 router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
+router.use('/roles', roleRoutes);
 router.use('/colleges', collegeRoutes);
 router.use('/academic', academicRoutes);
 router.use('/students', studentRoutes);

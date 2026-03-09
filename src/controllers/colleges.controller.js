@@ -1,7 +1,9 @@
 const { validationResult } = require('express-validator');
 const College = require('../models/college.model');
 const User = require('../models/user.model');
+const Role = require('../models/role.model');
 const { uploadToS3, deleteFromS3, generateFileName } = require('../utils/upload');
+const { getOwnerPermissions } = require('../utils/permissions');
 const logger = require('../utils/logger');
 
 const handleValidation = (req, res) => {
@@ -41,9 +43,23 @@ const createCollege = async (req, res, next) => {
   try {
     const college = await College.create(req.body);
 
-    // Update the user who created the college
+    const collegeId = college._id;
+
+    let ownerRole = await Role.findOne({ name: 'owner', college: collegeId });
+    if (!ownerRole) {
+      ownerRole = await Role.create({
+        name: 'owner',
+        description: 'College owner with full access to all modules',
+        permissions: getOwnerPermissions(),
+        college: collegeId
+      });
+    }
+
     if (req.user && req.user._id) {
-      await User.findByIdAndUpdate(req.user._id, { college: college._id });
+      await User.findByIdAndUpdate(req.user._id, {
+        college: collegeId,
+        role: ownerRole._id
+      });
     }
 
     res.status(201).json({ success: true, data: college });

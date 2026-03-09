@@ -1,8 +1,6 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
-const roles = ['admin', 'editor', 'viewer', 'user'];
-
 const userSchema = new mongoose.Schema(
   {
     name: {
@@ -29,9 +27,9 @@ const userSchema = new mongoose.Schema(
       trim: true
     },
     role: {
-      type: String,
-      enum: roles,
-      default: 'user'
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Role',
+      default: null
     },
     college: {
       type: mongoose.Schema.Types.ObjectId,
@@ -76,5 +74,4 @@ userSchema.methods.toJSON = function toJSON() {
 };
 
 module.exports = mongoose.model('User', userSchema);
-module.exports.roles = roles;
 

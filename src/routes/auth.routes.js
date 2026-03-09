@@ -20,8 +20,8 @@ router.post(
       .withMessage('Password must be at least 6 characters'),
     body('role')
       .optional()
-      .isIn(['admin', 'editor', 'viewer', 'user'])
-      .withMessage('Invalid role supplied'),
+      .isMongoId()
+      .withMessage('Role must be a valid Mongo ID'),
     body('college').optional().isMongoId().withMessage('College must be a valid Mongo ID')
   ],
   register

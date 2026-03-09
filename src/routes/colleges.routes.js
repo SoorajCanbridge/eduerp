@@ -10,6 +10,7 @@ const {
 } = require('../controllers/colleges.controller');
 const auth = require('../middleware/auth');
 const { uploadSingle } = require('../middleware/upload');
+const { requirePermission } = require('../middleware/permissions');
 
 const router = express.Router();
 
@@ -90,12 +91,17 @@ const updateValidators = [
 
 router.use(auth);
 
-router.get('/', getAllColleges);
-router.get('/:id', getCollegeById);
-router.post('/', createValidators, createCollege);
-router.put('/:id', updateValidators, updateCollege);
-router.delete('/:id', deleteCollege);
-router.post('/:id/logo', uploadSingle('logo'), uploadLogo);
+router.get('/', requirePermission('settings', 'view'), getAllColleges);
+router.get('/:id', requirePermission('settings', 'view'), getCollegeById);
+router.post('/', requirePermission('settings', 'edit'), createValidators, createCollege);
+router.put('/:id', requirePermission('settings', 'edit'), updateValidators, updateCollege);
+router.delete('/:id', requirePermission('settings', 'edit'), deleteCollege);
+router.post(
+  '/:id/logo',
+  requirePermission('settings', 'edit'),
+  uploadSingle('logo'),
+  uploadLogo
+);
 
 module.exports = router;
 

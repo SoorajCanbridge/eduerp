@@ -1,6 +1,7 @@
 const express = require('express');
 const { body } = require('express-validator');
 const auth = require('../middleware/auth');
+const { requirePermission } = require('../middleware/permissions');
 const {
   // categories
   getCategories,
@@ -394,28 +395,74 @@ const expenseUpdateValidators = [
 ];
 
 // CATEGORY routes
-router.get('/categories', getCategories);
-router.get('/categories/:id', getCategoryById);
-router.post('/categories', categoryCreateValidators, createCategory);
-router.put('/categories/:id', categoryUpdateValidators, updateCategory);
-router.delete('/categories/:id', deleteCategory);
+router.get('/categories', requirePermission('finance', 'view'), getCategories);
+router.get('/categories/:id', requirePermission('finance', 'view'), getCategoryById);
+router.post(
+  '/categories',
+  requirePermission('finance', 'edit'),
+  categoryCreateValidators,
+  createCategory
+);
+router.put(
+  '/categories/:id',
+  requirePermission('finance', 'edit'),
+  categoryUpdateValidators,
+  updateCategory
+);
+router.delete(
+  '/categories/:id',
+  requirePermission('finance', 'edit'),
+  deleteCategory
+);
 
 // INCOME routes
-router.get('/incomes', getIncomes);
-router.get('/incomes/:id', getIncomeById);
-router.post('/incomes', incomeCreateValidators, createIncome);
-router.put('/incomes/:id', incomeUpdateValidators, updateIncome);
-router.delete('/incomes/:id', deleteIncome);
+router.get('/incomes', requirePermission('finance', 'view'), getIncomes);
+router.get('/incomes/:id', requirePermission('finance', 'view'), getIncomeById);
+router.post(
+  '/incomes',
+  requirePermission('finance', 'edit'),
+  incomeCreateValidators,
+  createIncome
+);
+router.put(
+  '/incomes/:id',
+  requirePermission('finance', 'edit'),
+  incomeUpdateValidators,
+  updateIncome
+);
+router.delete(
+  '/incomes/:id',
+  requirePermission('finance', 'edit'),
+  deleteIncome
+);
 
 // EXPENSE routes
-router.get('/expenses', getExpenses);
-router.get('/expenses/:id', getExpenseById);
-router.post('/expenses', expenseCreateValidators, createExpense);
-router.put('/expenses/:id', expenseUpdateValidators, updateExpense);
-router.delete('/expenses/:id', deleteExpense);
+router.get('/expenses', requirePermission('finance', 'view'), getExpenses);
+router.get(
+  '/expenses/:id',
+  requirePermission('finance', 'view'),
+  getExpenseById
+);
+router.post(
+  '/expenses',
+  requirePermission('finance', 'edit'),
+  expenseCreateValidators,
+  createExpense
+);
+router.put(
+  '/expenses/:id',
+  requirePermission('finance', 'edit'),
+  expenseUpdateValidators,
+  updateExpense
+);
+router.delete(
+  '/expenses/:id',
+  requirePermission('finance', 'edit'),
+  deleteExpense
+);
 
 // SUMMARY
-router.get('/summary', getFinanceSummary);
+router.get('/summary', requirePermission('finance', 'view'), getFinanceSummary);
 
 // INVOICE validators
 const invoiceCreateValidators = [
@@ -848,41 +895,144 @@ const paymentUpdateValidators = [
 ];
 
 // INVOICE routes
-router.get('/invoices', getInvoices);
-router.get('/invoices/:id', getInvoiceById);
-router.post('/invoices', invoiceCreateValidators, createInvoice);
-router.put('/invoices/:id', invoiceUpdateValidators, updateInvoice);
-router.delete('/invoices/:id', deleteInvoice);
-router.post('/invoices/:id/pay-items', payInvoiceItemsValidators, payInvoiceItems);
+router.get('/invoices', requirePermission('invoice', 'view'), getInvoices);
+router.get(
+  '/invoices/:id',
+  requirePermission('invoice', 'view'),
+  getInvoiceById
+);
+router.post(
+  '/invoices',
+  requirePermission('invoice', 'edit'),
+  invoiceCreateValidators,
+  createInvoice
+);
+router.put(
+  '/invoices/:id',
+  requirePermission('invoice', 'edit'),
+  invoiceUpdateValidators,
+  updateInvoice
+);
+router.delete(
+  '/invoices/:id',
+  requirePermission('invoice', 'edit'),
+  deleteInvoice
+);
+router.post(
+  '/invoices/:id/pay-items',
+  requirePermission('invoice', 'edit'),
+  payInvoiceItemsValidators,
+  payInvoiceItems
+);
 
 // SAVED INVOICE CONTENT routes
-router.get('/saved-invoice-contents', getSavedInvoiceContents);
-router.get('/saved-invoice-contents/:id', getSavedInvoiceContentById);
-router.post('/saved-invoice-contents', savedInvoiceContentCreateValidators, createSavedInvoiceContent);
-router.put('/saved-invoice-contents/:id', savedInvoiceContentUpdateValidators, updateSavedInvoiceContent);
-router.delete('/saved-invoice-contents/:id', deleteSavedInvoiceContent);
+router.get(
+  '/saved-invoice-contents',
+  requirePermission('fees', 'view'),
+  getSavedInvoiceContents
+);
+router.get(
+  '/saved-invoice-contents/:id',
+  requirePermission('fees', 'view'),
+  getSavedInvoiceContentById
+);
+router.post(
+  '/saved-invoice-contents',
+  requirePermission('fees', 'edit'),
+  savedInvoiceContentCreateValidators,
+  createSavedInvoiceContent
+);
+router.put(
+  '/saved-invoice-contents/:id',
+  requirePermission('fees', 'edit'),
+  savedInvoiceContentUpdateValidators,
+  updateSavedInvoiceContent
+);
+router.delete(
+  '/saved-invoice-contents/:id',
+  requirePermission('fees', 'edit'),
+  deleteSavedInvoiceContent
+);
 
 // ACCOUNT routes (specific path before :id so /accounts/:id/ledgers is matched)
-router.get('/accounts', getAccounts);
-router.get('/accounts/:id/ledgers', getAccountLedgers);
-router.get('/accounts/:id', getAccountById);
-router.post('/accounts', accountCreateValidators, createAccount);
-router.put('/accounts/:id', accountUpdateValidators, updateAccount);
-router.delete('/accounts/:id', deleteAccount);
+router.get('/accounts', requirePermission('finance', 'view'), getAccounts);
+router.get(
+  '/accounts/:id/ledgers',
+  requirePermission('finance', 'view'),
+  getAccountLedgers
+);
+router.get(
+  '/accounts/:id',
+  requirePermission('finance', 'view'),
+  getAccountById
+);
+router.post(
+  '/accounts',
+  requirePermission('finance', 'edit'),
+  accountCreateValidators,
+  createAccount
+);
+router.put(
+  '/accounts/:id',
+  requirePermission('finance', 'edit'),
+  accountUpdateValidators,
+  updateAccount
+);
+router.delete(
+  '/accounts/:id',
+  requirePermission('finance', 'edit'),
+  deleteAccount
+);
 
 // LEDGER routes
-router.get('/ledgers', getLedgers);
-router.get('/ledgers/:id', getLedgerById);
-router.post('/ledgers', ledgerCreateValidators, createLedger);
-router.put('/ledgers/:id', ledgerUpdateValidators, updateLedger);
-router.delete('/ledgers/:id', deleteLedger);
+router.get('/ledgers', requirePermission('finance', 'view'), getLedgers);
+router.get(
+  '/ledgers/:id',
+  requirePermission('finance', 'view'),
+  getLedgerById
+);
+router.post(
+  '/ledgers',
+  requirePermission('finance', 'edit'),
+  ledgerCreateValidators,
+  createLedger
+);
+router.put(
+  '/ledgers/:id',
+  requirePermission('finance', 'edit'),
+  ledgerUpdateValidators,
+  updateLedger
+);
+router.delete(
+  '/ledgers/:id',
+  requirePermission('finance', 'edit'),
+  deleteLedger
+);
 
 // PAYMENT routes
-router.get('/payments', getPayments);
-router.get('/payments/:id', getPaymentById);
-router.post('/payments', paymentCreateValidators, createPayment);
-router.put('/payments/:id', paymentUpdateValidators, updatePayment);
-router.delete('/payments/:id', deletePayment);
+router.get('/payments', requirePermission('payments', 'view'), getPayments);
+router.get(
+  '/payments/:id',
+  requirePermission('payments', 'view'),
+  getPaymentById
+);
+router.post(
+  '/payments',
+  requirePermission('payments', 'edit'),
+  paymentCreateValidators,
+  createPayment
+);
+router.put(
+  '/payments/:id',
+  requirePermission('payments', 'edit'),
+  paymentUpdateValidators,
+  updatePayment
+);
+router.delete(
+  '/payments/:id',
+  requirePermission('payments', 'edit'),
+  deletePayment
+);
 
 module.exports = router;
 

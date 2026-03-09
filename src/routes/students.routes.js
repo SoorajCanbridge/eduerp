@@ -12,6 +12,7 @@ const {
   bulkUpdateActiveStatus
 } = require('../controllers/students.controller');
 const auth = require('../middleware/auth');
+const { requirePermission } = require('../middleware/permissions');
 
 const router = express.Router();
 
@@ -258,17 +259,22 @@ const bulkUpdateActiveStatusValidators = [
 router.use(auth);
 
 // Main CRUD routes
-router.get('/', getAllStudents);
-router.get('/stats', getStudentStats);
-router.get('/course/:courseId', getStudentsByCourse);
-router.get('/college/:collegeId', getStudentsByCollege);
-router.get('/:id', getStudentById);
-router.post('/', createValidators, createStudent);
-router.put('/:id', updateValidators, updateStudent);
-router.delete('/:id', deleteStudent);
+router.get('/', requirePermission('students', 'view'), getAllStudents);
+router.get('/stats', requirePermission('students', 'view'), getStudentStats);
+router.get('/course/:courseId', requirePermission('students', 'view'), getStudentsByCourse);
+router.get('/college/:collegeId', requirePermission('students', 'view'), getStudentsByCollege);
+router.get('/:id', requirePermission('students', 'view'), getStudentById);
+router.post('/', requirePermission('students', 'edit'), createValidators, createStudent);
+router.put('/:id', requirePermission('students', 'edit'), updateValidators, updateStudent);
+router.delete('/:id', requirePermission('students', 'edit'), deleteStudent);
 
 // Bulk update active status
-router.put('/bulk/active-status', bulkUpdateActiveStatusValidators, bulkUpdateActiveStatus);
+router.put(
+  '/bulk/active-status',
+  requirePermission('students', 'edit'),
+  bulkUpdateActiveStatusValidators,
+  bulkUpdateActiveStatus
+);
 
 module.exports = router;
 

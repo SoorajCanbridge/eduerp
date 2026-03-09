@@ -11,6 +11,7 @@ const {
   getExpectedTimes
 } = require('../controllers/collegeAttendanceCriteria.controller');
 const auth = require('../middleware/auth');
+const { requirePermission } = require('../middleware/permissions');
 
 const router = express.Router();
 
@@ -24,12 +25,14 @@ router.get(
       .isMongoId()
       .withMessage('Valid college ID is required')
   ],
+  requirePermission('settings', 'view'),
   getCollegeAttendanceCriteria
 );
 
 // Get attendance criteria for current user's college
 router.get(
   '/college',
+  requirePermission('settings', 'view'),
   getCollegeAttendanceCriteria
 );
 
@@ -41,12 +44,14 @@ router.post(
       .isMongoId()
       .withMessage('Valid college ID is required')
   ],
+  requirePermission('settings', 'edit'),
   upsertCollegeAttendanceCriteria
 );
 
 // Create or update attendance criteria for current user's college
 router.post(
   '/college',
+  requirePermission('settings', 'edit'),
   upsertCollegeAttendanceCriteria
 );
 
@@ -81,6 +86,7 @@ router.patch(
       .isObject()
       .withMessage('Section data must be an object')
   ],
+  requirePermission('settings', 'edit'),
   updateCriteriaSection
 );
 
@@ -92,6 +98,7 @@ router.get(
       .isMongoId()
       .withMessage('Valid college ID is required')
   ],
+  requirePermission('settings', 'view'),
   getOrCreateDefaultCriteria
 );
 
@@ -113,6 +120,7 @@ router.post(
       .isBoolean()
       .withMessage('isCheckIn must be a boolean')
   ],
+  requirePermission('settings', 'view'),
   validateLocation
 );
 
@@ -128,6 +136,7 @@ router.get(
       .isISO8601()
       .withMessage('Date must be a valid ISO 8601 date')
   ],
+  requirePermission('settings', 'view'),
   checkWorkingDay
 );
 
@@ -143,6 +152,7 @@ router.get(
       .isISO8601()
       .withMessage('Date must be a valid ISO 8601 date')
   ],
+  requirePermission('settings', 'view'),
   getExpectedTimes
 );
 
@@ -154,6 +164,7 @@ router.delete(
       .isMongoId()
       .withMessage('Valid college ID is required')
   ],
+  requirePermission('settings', 'edit'),
   deleteCollegeAttendanceCriteria
 );
 

@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const env = require('../config/env');
 const User = require('../models/user.model');
+const { getPermissionsForUser } = require('../utils/permissions');
 
 const extractToken = (req) => {
   const authHeader = req.headers.authorization || '';
@@ -18,13 +19,18 @@ const authMiddleware = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, env.jwtSecret);
-    const user = await User.findById(decoded.sub).select('-password');
+    const user = await User.findById(decoded.sub)
+      .select('-password')
+      .populate('role');
 
     if (!user) {
       return res
         .status(401)
         .json({ success: false, message: 'User no longer exists' });
     }
+
+    const permissions = await getPermissionsForUser(user);
+    user.permissions = permissions;
 
     req.user = user;
     return next();

@@ -44,6 +44,7 @@ const {
   markPaySlipSent
 } = require('../controllers/teachers.controller');
 const auth = require('../middleware/auth');
+const { requirePermission } = require('../middleware/permissions');
 
 const router = express.Router();
 
@@ -667,24 +668,69 @@ const payrollPaymentValidators = [
 ];
 
 // ATTENDANCE routes (must be before /:id route to avoid route conflicts)
-router.get('/attendance', getTeacherAttendances);
-router.get('/attendance/summary', getTeacherAttendanceSummary);
-router.get('/attendance/:id', getTeacherAttendanceById);
-router.post('/attendance', attendanceCreateValidators, createTeacherAttendance);
-router.post('/attendance/mass', massAttendanceValidators, createMassTeacherAttendance);
-router.put('/attendance/:id', attendanceUpdateValidators, updateTeacherAttendance);
-router.delete('/attendance/:id', deleteTeacherAttendance);
-router.post('/attendance/:id/validate', validateTeacherAttendance);
-router.post('/attendance/:id/check-in', checkInAttendance);
-router.post('/attendance/:id/check-out', checkOutAttendance);
-router.post('/attendance/:id/approve', approveTeacherAttendance);
+router.get('/attendance', requirePermission('attendance', 'view'), getTeacherAttendances);
+router.get(
+  '/attendance/summary',
+  requirePermission('attendance', 'view'),
+  getTeacherAttendanceSummary
+);
+router.get(
+  '/attendance/:id',
+  requirePermission('attendance', 'view'),
+  getTeacherAttendanceById
+);
+router.post(
+  '/attendance',
+  requirePermission('attendance', 'edit'),
+  attendanceCreateValidators,
+  createTeacherAttendance
+);
+router.post(
+  '/attendance/mass',
+  requirePermission('attendance', 'edit'),
+  massAttendanceValidators,
+  createMassTeacherAttendance
+);
+router.put(
+  '/attendance/:id',
+  requirePermission('attendance', 'edit'),
+  attendanceUpdateValidators,
+  updateTeacherAttendance
+);
+router.delete(
+  '/attendance/:id',
+  requirePermission('attendance', 'edit'),
+  deleteTeacherAttendance
+);
+router.post(
+  '/attendance/:id/validate',
+  requirePermission('attendance', 'edit'),
+  validateTeacherAttendance
+);
+router.post(
+  '/attendance/:id/check-in',
+  requirePermission('attendance', 'edit'),
+  checkInAttendance
+);
+router.post(
+  '/attendance/:id/check-out',
+  requirePermission('attendance', 'edit'),
+  checkOutAttendance
+);
+router.post(
+  '/attendance/:id/approve',
+  requirePermission('attendance', 'edit'),
+  approveTeacherAttendance
+);
 router.post('/attendance/:id/reject', [
+  requirePermission('attendance', 'edit'),
   body('reason')
     .notEmpty()
     .withMessage('Rejection reason is required')
     .trim()
 ], rejectTeacherAttendance);
 router.post('/attendance/:id/regularize', [
+  requirePermission('attendance', 'edit'),
   body('reason')
     .notEmpty()
     .withMessage('Regularization reason is required')
@@ -692,35 +738,67 @@ router.post('/attendance/:id/regularize', [
 ], regularizeTeacherAttendance);
 
 // PAYROLL routes (must be before /:id route to avoid route conflicts)
-router.get('/payroll', getPayrolls);
-router.get('/payroll/ytd', getPayrollYTD);
-router.get('/payroll/:id', getPayrollById);
-router.post('/payroll/generate', payrollGenerateValidators, generatePayroll);
-router.put('/payroll/:id', payrollUpdateValidators, updatePayroll);
-router.post('/payroll/:id/pay', payrollPaymentValidators, processPayrollPayment);
-router.delete('/payroll/:id', deletePayroll);
+router.get('/payroll', requirePermission('payrolls', 'view'), getPayrolls);
+router.get('/payroll/ytd', requirePermission('payrolls', 'view'), getPayrollYTD);
+router.get(
+  '/payroll/:id',
+  requirePermission('payrolls', 'view'),
+  getPayrollById
+);
+router.post(
+  '/payroll/generate',
+  requirePermission('payrolls', 'edit'),
+  payrollGenerateValidators,
+  generatePayroll
+);
+router.put(
+  '/payroll/:id',
+  requirePermission('payrolls', 'edit'),
+  payrollUpdateValidators,
+  updatePayroll
+);
+router.post(
+  '/payroll/:id/pay',
+  requirePermission('payrolls', 'edit'),
+  payrollPaymentValidators,
+  processPayrollPayment
+);
+router.delete(
+  '/payroll/:id',
+  requirePermission('payrolls', 'edit'),
+  deletePayroll
+);
 // Payroll approval workflow
 router.post('/payroll/:id/approve', [
+  requirePermission('payrolls', 'edit'),
   body('comments').optional().trim(),
   body('level').optional().isInt({ min: 1 }).withMessage('Level must be a positive integer')
 ], approvePayroll);
 router.post('/payroll/:id/reject', [
+  requirePermission('payrolls', 'edit'),
   body('comments').notEmpty().withMessage('Rejection reason is required').trim(),
   body('level').optional().isInt({ min: 1 }).withMessage('Level must be a positive integer')
 ], rejectPayroll);
 // Payroll reversal
 router.post('/payroll/:id/reverse', [
+  requirePermission('payrolls', 'edit'),
   body('reason').optional().trim()
 ], reversePayroll);
 // Payroll hold/unhold
 router.post('/payroll/:id/hold', [
+  requirePermission('payrolls', 'edit'),
   body('reason').optional().trim(),
   body('holdFrom').optional().isISO8601().withMessage('Hold from date must be a valid ISO date'),
   body('holdTo').optional().isISO8601().withMessage('Hold to date must be a valid ISO date')
 ], holdPayroll);
-router.post('/payroll/:id/unhold', unholdPayroll);
+router.post(
+  '/payroll/:id/unhold',
+  requirePermission('payrolls', 'edit'),
+  unholdPayroll
+);
 // Payment splits
 router.post('/payroll/:id/payment-split', [
+  requirePermission('payrolls', 'edit'),
   body('amount').isFloat({ min: 0 }).withMessage('Amount must be a positive number'),
   body('paymentDate').isISO8601().withMessage('Payment date must be a valid ISO date'),
   body('paymentMethod').optional().isIn(paymentMethods).withMessage('Payment method must be valid'),
@@ -728,6 +806,7 @@ router.post('/payroll/:id/payment-split', [
   body('transactionReference').optional().trim()
 ], addPaymentSplit);
 router.put('/payroll/:id/payment-split/:splitId', [
+  requirePermission('payrolls', 'edit'),
   body('amount').optional().isFloat({ min: 0 }).withMessage('Amount must be a positive number'),
   body('paymentDate').optional().isISO8601().withMessage('Payment date must be a valid ISO date'),
   body('paymentMethod').optional().isIn(paymentMethods).withMessage('Payment method must be valid'),
@@ -736,21 +815,52 @@ router.put('/payroll/:id/payment-split/:splitId', [
   body('status').optional().isIn(['pending', 'paid', 'failed', 'cancelled']).withMessage('Status must be valid')
 ], updatePaymentSplit);
 // Pay slip
-router.post('/payroll/:id/payslip/generate', generatePaySlip);
+router.post(
+  '/payroll/:id/payslip/generate',
+  requirePermission('payrolls', 'edit'),
+  generatePaySlip
+);
 router.post('/payroll/:id/payslip/sent', [
+  requirePermission('payrolls', 'edit'),
   body('sentTo').optional().trim()
 ], markPaySlipSent);
 
 // Main CRUD routes (/:id must be last to avoid conflicts with specific routes)
-router.get('/', getAllTeachers);
-router.get('/stats', getTeacherStats);
-router.get('/department/:department', getTeachersByDepartment);
-router.get('/college/:collegeId', getTeachersByCollege);
-router.get('/course/:courseId', getTeachersByCourse);
-router.get('/:id', getTeacherById);
-router.post('/', createValidators, createTeacher);
-router.put('/:id', updateValidators, updateTeacher);
-router.delete('/:id', deleteTeacher);
+router.get('/', requirePermission('staff', 'view'), getAllTeachers);
+router.get('/stats', requirePermission('staff', 'view'), getTeacherStats);
+router.get(
+  '/department/:department',
+  requirePermission('staff', 'view'),
+  getTeachersByDepartment
+);
+router.get(
+  '/college/:collegeId',
+  requirePermission('staff', 'view'),
+  getTeachersByCollege
+);
+router.get(
+  '/course/:courseId',
+  requirePermission('staff', 'view'),
+  getTeachersByCourse
+);
+router.get('/:id', requirePermission('staff', 'view'), getTeacherById);
+router.post(
+  '/',
+  requirePermission('staff', 'edit'),
+  createValidators,
+  createTeacher
+);
+router.put(
+  '/:id',
+  requirePermission('staff', 'edit'),
+  updateValidators,
+  updateTeacher
+);
+router.delete(
+  '/:id',
+  requirePermission('staff', 'edit'),
+  deleteTeacher
+);
 
 module.exports = router;
 

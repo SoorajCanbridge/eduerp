@@ -8,13 +8,12 @@ const {
   deleteUser
 } = require('../controllers/users.controller');
 const auth = require('../middleware/auth');
-const User = require('../models/user.model');
+const { requirePermission } = require('../middleware/permissions');
 
 const router = express.Router();
-const roleOptions = User.roles || ['admin', 'editor', 'viewer', 'user'];
 
 const listValidators = [
-  query('role').optional().isIn(roleOptions).withMessage('Invalid role'),
+  query('role').optional().isMongoId().withMessage('Role must be a valid Mongo ID'),
   query('isActive').optional().isIn(['true', 'false']).withMessage('isActive must be true or false'),
   query('page').optional().isInt({ min: 1 }).withMessage('page must be a positive integer'),
   query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('limit must be between 1 and 100'),
@@ -32,7 +31,10 @@ const createValidators = [
     .isLength({ min: 6 })
     .withMessage('Password must be at least 6 characters'),
   body('phone').optional().trim(),
-  body('role').optional().isIn(roleOptions).withMessage('Invalid role'),
+  body('role')
+    .optional({ values: 'null' })
+    .isMongoId()
+    .withMessage('Role must be a valid Mongo ID'),
   body('college').optional().isMongoId().withMessage('College must be a valid Mongo ID'),
   body('isActive').optional().isBoolean().withMessage('isActive must be a boolean')
 ];
@@ -42,17 +44,20 @@ const updateValidators = [
   body('email').optional().isEmail().withMessage('Valid email required').normalizeEmail(),
   body('password').optional().isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
   body('phone').optional().trim(),
-  body('role').optional().isIn(roleOptions).withMessage('Invalid role'),
+  body('role')
+    .optional({ values: 'null' })
+    .isMongoId()
+    .withMessage('Role must be a valid Mongo ID'),
   body('college').optional().isMongoId().withMessage('College must be a valid Mongo ID'),
   body('isActive').optional().isBoolean().withMessage('isActive must be a boolean')
 ];
 
 router.use(auth);
 
-router.get('/', listValidators, getAllUsers);
-router.get('/:id', getUserById);
-router.post('/', createValidators, createUser);
-router.put('/:id', updateValidators, updateUser);
-router.delete('/:id', deleteUser);
+router.get('/', requirePermission('team', 'view'), listValidators, getAllUsers);
+router.get('/:id', requirePermission('team', 'view'), getUserById);
+router.post('/', requirePermission('team', 'edit'), createValidators, createUser);
+router.put('/:id', requirePermission('team', 'edit'), updateValidators, updateUser);
+router.delete('/:id', requirePermission('team', 'edit'), deleteUser);
 
 module.exports = router;
