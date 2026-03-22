@@ -1,7 +1,54 @@
 const mongoose = require('mongoose');
 
 const paymentStatuses = ['pending', 'completed', 'failed', 'cancelled', 'refunded'];
-const paymentMethods = ['cash', 'bank-transfer', 'upi', 'cheque', 'card', 'other'];
+/** Methods allowed on each line when payment is split across multiple methods */
+const paymentMethodSplitValues = ['cash', 'bank-transfer', 'upi', 'cheque', 'card', 'other'];
+/** Top-level payment method; includes `mixed` when amountSplits use more than one method */
+const paymentMethods = [...paymentMethodSplitValues, 'mixed'];
+
+const amountSplitSchema = new mongoose.Schema(
+  {
+    amount: {
+      type: Number,
+      required: true,
+      min: 0
+    },
+    paymentMethod: {
+      type: String,
+      enum: paymentMethodSplitValues,
+      required: true
+    },
+    referenceNumber: {
+      type: String,
+      trim: true
+    },
+    transactionId: {
+      type: String,
+      trim: true
+    },
+    chequeNumber: {
+      type: String,
+      trim: true
+    },
+    chequeDate: {
+      type: Date
+    },
+    bankName: {
+      type: String,
+      trim: true
+    },
+    notes: {
+      type: String,
+      trim: true
+    },
+    /** When set, this split is credited to this account; otherwise the payment-level `account` is used */
+    account: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Account'
+    }
+  },
+  { _id: true }
+);
 
 const paymentSchema = new mongoose.Schema(
   {
@@ -23,8 +70,15 @@ const paymentSchema = new mongoose.Schema(
     paymentMethod: {
       type: String,
       enum: paymentMethods,
-      required: true,
+      required: function requiredPaymentMethod() {
+        return !this.amountSplits || this.amountSplits.length === 0;
+      },
       default: 'cash'
+    },
+    /** Optional breakdown when the total is paid using multiple methods or references */
+    amountSplits: {
+      type: [amountSplitSchema],
+      default: undefined
     },
     status: {
       type: String,
@@ -95,10 +149,34 @@ paymentSchema.index({ student: 1 });
 paymentSchema.index({ account: 1 });
 paymentSchema.index({ status: 1 });
 
+const SPLIT_SUM_EPS = 0.01;
+
+paymentSchema.pre('validate', function syncPaymentMethodFromSplits(next) {
+  const splits = this.amountSplits;
+  if (splits && splits.length > 0) {
+    const sum = splits.reduce((s, row) => s + (Number(row.amount) || 0), 0);
+    if (Math.abs(sum - Number(this.amount)) > SPLIT_SUM_EPS) {
+      this.invalidate('amountSplits', 'Sum of amount splits must equal payment amount');
+      return next();
+    }
+    const methods = splits.map((row) => row.paymentMethod).filter(Boolean);
+    if (methods.length !== splits.length) {
+      this.invalidate('amountSplits', 'Each amount split must have a paymentMethod');
+      return next();
+    }
+    const unique = [...new Set(methods)];
+    if (unique.length > 1) {
+      this.paymentMethod = 'mixed';
+    } else if (unique.length === 1) {
+      this.paymentMethod = unique[0];
+    }
+  }
+ 
+});
+
 // Pre-save hook: auto-generate payment number (per college)
-paymentSchema.pre('save', async function(next) {
+paymentSchema.pre('save', async function generatePaymentNumber(next) {
   try {
-    // Auto-generate payment number for new payments when not provided
     if (this.isNew && !this.paymentNumber && this.college) {
       const lastPayment = await this.constructor
         .findOne({ college: this.college })
@@ -109,11 +187,10 @@ paymentSchema.pre('save', async function(next) {
       const nextNum = match ? parseInt(match[1], 10) + 1 : 1;
       this.paymentNumber = `PAY-${String(nextNum).padStart(5, '0')}`;
     }
-    // next();
+ 
   } catch (err) {
     next(err);
   }
 });
 
 module.exports = mongoose.model('Payment', paymentSchema);
-

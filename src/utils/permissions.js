@@ -62,6 +62,15 @@ const getDefaultRoleId = async () => {
   return role ? role._id : null;
 };
 
+/**
+ * Get the "client" role id (global). Used when creating a client user. Falls back to default role if none.
+ * @returns {Promise<ObjectId|null>}
+ */
+const getClientRoleId = async () => {
+  const role = await Role.findOne({ name: 'client', college: null }).select('_id').lean();
+  return role ? role._id : getDefaultRoleId();
+};
+
 const normalizeAction = (action) => {
   const a = action && String(action).trim().toLowerCase();
   if (a === 'edit' || a === '*') return 'edit';

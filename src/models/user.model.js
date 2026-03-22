@@ -35,6 +35,11 @@ const userSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'College'
     },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null
+    },
     isActive: {
       type: Boolean,
       default: true
@@ -49,6 +54,7 @@ const userSchema = new mongoose.Schema(
 userSchema.index({ college: 1, role: 1 });
 userSchema.index({ college: 1, isActive: 1 });
 userSchema.index({ email: 1 });
+userSchema.index({ createdBy: 1 });
 
 userSchema.pre('save', async function hashPassword() {
   if (!this.isModified('password')) {

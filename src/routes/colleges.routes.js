@@ -92,7 +92,7 @@ const updateValidators = [
 router.use(auth);
 
 router.get('/', requirePermission('settings', 'view'), getAllColleges);
-router.get('/:id', requirePermission('settings', 'view'), getCollegeById);
+router.get('/:id', getCollegeById);
 router.post('/', requirePermission('settings', 'edit'), createValidators, createCollege);
 router.put('/:id', requirePermission('settings', 'edit'), updateValidators, updateCollege);
 router.delete('/:id', requirePermission('settings', 'edit'), deleteCollege);

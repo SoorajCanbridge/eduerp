@@ -60,6 +60,11 @@ const collegeSchema = new mongoose.Schema(
     logo: {
       type: String,
       trim: true
+    },
+    subscription: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Subscription',
+      default: null
     }
   },
   { timestamps: true }

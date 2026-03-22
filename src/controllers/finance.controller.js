@@ -8,6 +8,8 @@ const Account = require('../models/account.model');
 const Ledger = require('../models/ledger.model');
 const Payment = require('../models/payment.model');
 
+const PAYMENT_SPLIT_AMOUNT_EPS = 0.02;
+
 const handleValidation = (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -15,6 +17,219 @@ const handleValidation = (req, res) => {
     return true;
   }
   return false;
+};
+
+/** Accept `account`, `accountId`, or populated `{ _id }`; fall back to payment-level account. */
+const resolveSplitAccountId = (splitRow, paymentAccountId) => {
+  const ref = splitRow.account ?? splitRow.accountId;
+  const fallback =
+    paymentAccountId && typeof paymentAccountId === 'object' && paymentAccountId._id != null
+      ? paymentAccountId._id
+      : paymentAccountId;
+  if (ref == null || ref === '') {
+    return fallback;
+  }
+  if (typeof ref === 'object' && ref._id != null) {
+    return ref._id;
+  }
+  return ref;
+};
+
+/** Prefer `amountSplits`; also accepts `accountSplits` (same shape: account + amount). */
+const getPaymentSplitsRowsFromBody = (body) => {
+  if (body.amountSplits && Array.isArray(body.amountSplits) && body.amountSplits.length > 0) {
+    return body.amountSplits;
+  }
+  if (body.accountSplits && Array.isArray(body.accountSplits) && body.accountSplits.length > 0) {
+    return body.accountSplits;
+  }
+  return null;
+};
+
+/** Normalize split rows from request body; returns `undefined` if no non-empty split array. */
+const normalizeAmountSplitsFromBody = (body) => {
+  const rows = getPaymentSplitsRowsFromBody(body);
+  if (!rows) {
+    return undefined;
+  }
+  const defaultPm = body.paymentMethod || 'cash';
+  return rows.map((row) => {
+    const split = {
+      amount: Number(row.amount),
+      paymentMethod: row.paymentMethod || defaultPm
+    };
+    if (row.referenceNumber != null && row.referenceNumber !== '') {
+      split.referenceNumber = String(row.referenceNumber).trim();
+    }
+    if (row.transactionId != null && row.transactionId !== '') {
+      split.transactionId = String(row.transactionId).trim();
+    }
+    if (row.chequeNumber != null && row.chequeNumber !== '') {
+      split.chequeNumber = String(row.chequeNumber).trim();
+    }
+    if (row.chequeDate) {
+      split.chequeDate = new Date(row.chequeDate);
+    }
+    if (row.bankName != null && row.bankName !== '') {
+      split.bankName = String(row.bankName).trim();
+    }
+    if (row.notes != null && row.notes !== '') {
+      split.notes = String(row.notes).trim();
+    }
+    const accRef = row.account ?? row.accountId;
+    if (accRef != null && accRef !== '') {
+      split.account = typeof accRef === 'object' && accRef._id != null ? accRef._id : accRef;
+    }
+    return split;
+  });
+};
+
+/**
+ * Resolve ledger credit lines for a payment: one line per split (or one line for the full amount).
+ * Each split credits its own account when set (`account` / `accountId`), else the payment-level account.
+ */
+const buildPaymentLedgerCreditLines = async (payment) => {
+  const doc = payment._id ? await Payment.findById(payment._id) : payment;
+  if (!doc) {
+    const err = new Error('Payment not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const collegeId = doc.college;
+  const splits =
+    doc.amountSplits && doc.amountSplits.length > 0
+      ? doc.amountSplits.map((s) => {
+          const plain = typeof s.toObject === 'function' ? s.toObject() : { ...s };
+          const rawAmt = plain.amount;
+          const amount = typeof rawAmt === 'object' && rawAmt != null && typeof rawAmt.toString === 'function'
+            ? Number(rawAmt.toString())
+            : Number(rawAmt);
+          if (!Number.isFinite(amount) || amount < 0) {
+            const err = new Error('Each amount split must have a valid non-negative amount');
+            err.statusCode = 400;
+            throw err;
+          }
+          const accountId = resolveSplitAccountId(plain, doc.account);
+          if (accountId == null || accountId === '') {
+            const err = new Error('Each amount split must resolve to an account (set split account/accountId or payment account)');
+            err.statusCode = 400;
+            throw err;
+          }
+          return { amount, accountId };
+        })
+      : [
+          {
+            amount:
+              typeof doc.amount === 'object' && doc.amount != null && typeof doc.amount.toString === 'function'
+                ? Number(doc.amount.toString())
+                : Number(doc.amount),
+            accountId: doc.account && typeof doc.account === 'object' && doc.account._id != null ? doc.account._id : doc.account
+          }
+        ];
+
+  for (const row of splits) {
+    if (row.accountId == null || row.accountId === '') {
+      const err = new Error('Each payment split must resolve to an account');
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
+  const splitSum = splits.reduce((sum, row) => sum + row.amount, 0);
+  const total =
+    typeof doc.amount === 'object' && doc.amount != null && typeof doc.amount.toString === 'function'
+      ? Number(doc.amount.toString())
+      : Number(doc.amount);
+  if (!Number.isFinite(total) || total < 0) {
+    const err = new Error('Payment amount is invalid');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (Math.abs(splitSum - total) > PAYMENT_SPLIT_AMOUNT_EPS) {
+    const err = new Error(
+      `Split amounts (${splitSum.toFixed(2)}) must equal payment amount (${total.toFixed(2)})`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const byAccount = new Map();
+  const lines = [];
+
+  for (const s of splits) {
+    if (s.amount === 0) {
+      continue;
+    }
+    const id = s.accountId.toString();
+    let rec = byAccount.get(id);
+    if (!rec) {
+      const acc = await Account.findById(s.accountId);
+      if (!acc) {
+        const err = new Error('Account not found for payment');
+        err.statusCode = 404;
+        throw err;
+      }
+      if (collegeId && acc.college && acc.college.toString() !== collegeId.toString()) {
+        const err = new Error('Each account must belong to the same college as the payment');
+        err.statusCode = 400;
+        throw err;
+      }
+      rec = { account: acc, running: acc.balance };
+      byAccount.set(id, rec);
+    }
+    rec.running += s.amount;
+    lines.push({
+      account: rec.account._id,
+      transactionType: 'credit',
+      amount: s.amount,
+      balanceAfter: rec.running
+    });
+  }
+
+  if (lines.length < 1) {
+    const err = new Error('No ledger lines could be generated for this payment');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return lines;
+};
+
+const collectPaymentAccountIds = (body) => {
+  const ids = new Set();
+  const primary = body.account;
+  if (primary) ids.add(primary.toString());
+  const splitRows = getPaymentSplitsRowsFromBody(body);
+  if (splitRows) {
+    for (const row of splitRows) {
+      const ref = resolveSplitAccountId(row, primary);
+      if (ref != null && ref !== '') ids.add(ref.toString());
+    }
+  }
+  return [...ids];
+};
+
+const assertPaymentAccountsValid = async (body, collegeId) => {
+  const ids = collectPaymentAccountIds(body);
+  if (ids.length === 0) {
+    const err = new Error('Account is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  for (const id of ids) {
+    const acc = await Account.findById(id);
+    if (!acc) {
+      const err = new Error('Account not found');
+      err.statusCode = 404;
+      throw err;
+    }
+    if (collegeId && acc.college && acc.college.toString() !== collegeId.toString()) {
+      const err = new Error('Account does not belong to this college');
+      err.statusCode = 400;
+      throw err;
+    }
+  }
 };
 
 // Get or create the "Payments" income category for a college
@@ -988,7 +1203,11 @@ const updateInvoice = async (req, res, next) => {
       invoice.taxCalculationMethod = taxCalculationMethod;
       invoice.subtotal = subtotal;
       invoice.taxAmount = taxAmount;
+      invoice.discount = discount;
       invoice.totalAmount = totalAmount;
+      if (taxCalculationMethod === 'total') {
+        invoice.taxRate = req.body.taxRate !== undefined ? req.body.taxRate : invoice.taxRate;
+      }
       
       // Calculate paidAmount from items (cap at totalAmount so tax is included)
       const itemPaidTotal = items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
@@ -1206,20 +1425,12 @@ const payInvoiceItems = async (req, res, next) => {
         createdBy: req.user._id
       });
 
-      account.balance += totalPaymentAmount;
-      account.updatedBy = req.user._id;
-      await account.save();
-
+      const lines = await buildPaymentLedgerCreditLines(payment);
       const paymentsCategory = await getOrCreatePaymentsCategory(collegeId, req.user._id);
       const paymentLedger = await Ledger.create({
         entryDate: payment.paymentDate,
         entryType: 'payment',
-        lines: [{
-          account: account._id,
-          transactionType: 'credit',
-          amount: payment.amount,
-          balanceAfter: account.balance
-        }],
+        lines,
         description: `Payment received: ${payment.paymentNumber}`,
         reference: payment.paymentNumber,
         referenceId: payment._id,
@@ -1257,6 +1468,7 @@ const payInvoiceItems = async (req, res, next) => {
     if (payment) {
       response.payment = await Payment.findById(payment._id)
         .populate('account', 'name accountType')
+        .populate('amountSplits.account', 'name accountType')
         .populate('invoice', 'invoiceNumber totalAmount')
         .populate('student', 'name studentId')
         .populate('college', 'name code');
@@ -2104,6 +2316,7 @@ const getPayments = async (req, res, next) => {
       .populate('invoice', 'invoiceNumber totalAmount')
       .populate('student', 'name studentId')
       .populate('account', 'name accountType')
+      .populate('amountSplits.account', 'name accountType')
       .populate('college', 'name code')
       .populate('createdBy', 'name email')
       .populate('updatedBy', 'name email')
@@ -2134,6 +2347,7 @@ const getPaymentById = async (req, res, next) => {
       .populate('invoice', 'invoiceNumber totalAmount balanceAmount')
       .populate('student', 'name studentId')
       .populate('account', 'name accountType')
+      .populate('amountSplits.account', 'name accountType')
       .populate('college', 'name code')
       .populate('createdBy', 'name email')
       .populate('updatedBy', 'name email');
@@ -2152,18 +2366,30 @@ const createPayment = async (req, res, next) => {
   if (handleValidation(req, res)) return;
 
   try {
-    const account = await Account.findById(req.body.account);
-    if (!account) {
-      return res.status(404).json({ success: false, message: 'Account not found' });
+    const collegeId = req.body.college || req.user.college;
+    try {
+      await assertPaymentAccountsValid(req.body, collegeId);
+    } catch (e) {
+      if (e.statusCode) {
+        return res.status(e.statusCode).json({ success: false, message: e.message });
+      }
+      throw e;
     }
 
     const data = {
       ...req.body,
-      college: req.body.college || req.user.college,
+      college: collegeId,
       createdBy: req.user._id
     };
+    delete data.amountSplits;
+    delete data.accountSplits;
     // paymentNumber is auto-generated in model pre-save when not provided
     if (!data.paymentNumber) delete data.paymentNumber;
+
+    const normalizedSplits = normalizeAmountSplitsFromBody(req.body);
+    if (normalizedSplits) {
+      data.amountSplits = normalizedSplits;
+    }
 
     const payment = await Payment.create(data);
 
@@ -2262,22 +2488,15 @@ const createPayment = async (req, res, next) => {
       }
     }
 
-    // Update account balance and create ledger entry if payment is completed
+    // Completed: one ledger credit line per split (each line uses split.account or payment.account).
+    // Ledger.applyToAccounts applies each line.balanceAfter to that line's account (multiple accounts supported).
     if (payment.status === 'completed') {
-      account.balance += payment.amount;
-      account.updatedBy = req.user._id;
-      await account.save();
-
+      const lines = await buildPaymentLedgerCreditLines(payment);
       const paymentsCategory = await getOrCreatePaymentsCategory(payment.college, req.user._id);
       const paymentLedger = await Ledger.create({
         entryDate: payment.paymentDate,
         entryType: 'payment',
-        lines: [{
-          account: account._id,
-          transactionType: 'credit',
-          amount: payment.amount,
-          balanceAfter: account.balance
-        }],
+        lines,
         description: `Payment received: ${payment.paymentNumber}`,
         reference: payment.paymentNumber,
         referenceId: payment._id,
@@ -2309,12 +2528,23 @@ const createPayment = async (req, res, next) => {
       .populate('invoice', 'invoiceNumber totalAmount')
       .populate('student', 'name studentId')
       .populate('account', 'name accountType')
+      .populate('amountSplits.account', 'name accountType')
       .populate('college', 'name code')
       .populate('createdBy', 'name email')
       .populate('updatedBy', 'name email');
 
     res.status(201).json({ success: true, data: populated });
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: error.message || 'Validation failed',
+        errors: error.errors
+      });
+    }
     if (error.code === 11000) {
       res.status(409).json({
         success: false,
@@ -2336,7 +2566,6 @@ const updatePayment = async (req, res, next) => {
     }
 
     const oldStatus = payment.status;
-    const oldAmount = payment.amount;
 
     const updatableFields = [
       'paymentNumber',
@@ -2362,93 +2591,106 @@ const updatePayment = async (req, res, next) => {
       }
     });
 
+    if (req.body.amountSplits !== undefined || req.body.accountSplits !== undefined) {
+      payment.amountSplits = normalizeAmountSplitsFromBody(req.body);
+    }
+
+    try {
+      await assertPaymentAccountsValid(
+        {
+          account: payment.account,
+          amountSplits: payment.amountSplits
+        },
+        payment.college
+      );
+    } catch (e) {
+      if (e.statusCode) {
+        return res.status(e.statusCode).json({ success: false, message: e.message });
+      }
+      throw e;
+    }
+
     payment.updatedBy = req.user._id;
     await payment.save();
 
-    // Handle status changes
-    const account = await Account.findById(payment.account);
-    if (account) {
-      if (oldStatus === 'completed' && payment.status !== 'completed') {
-        // Revert old transaction
-        account.balance -= oldAmount;
-        // Delete or update ledger entry
-        await Ledger.findOneAndDelete({
-          referenceId: payment._id,
-          referenceModel: 'Payment'
-        });
-      } else if (oldStatus !== 'completed' && payment.status === 'completed') {
-        // Apply new transaction
-        account.balance += payment.amount;
+    const ledgerNeedsRebuild =
+      oldStatus === 'completed' &&
+      payment.status === 'completed' &&
+      (req.body.amount !== undefined ||
+        req.body.account !== undefined ||
+        req.body.amountSplits !== undefined ||
+        req.body.accountSplits !== undefined ||
+        req.body.paymentDate !== undefined);
+
+    // Handle status changes — ledger lines mirror splits (per-account credits); revert before delete/rebuild
+    if (oldStatus === 'completed' && payment.status !== 'completed') {
+      const ledger = await Ledger.findOne({
+        referenceId: payment._id,
+        referenceModel: 'Payment'
+      });
+      if (ledger) {
+        await Ledger.revertFromAccounts(ledger);
+        await Ledger.findByIdAndDelete(ledger._id);
+      }
+      await Income.findOneAndUpdate(
+        { payment: payment._id },
+        { isCancelled: true, updatedBy: req.user._id }
+      );
+    } else if (oldStatus !== 'completed' && payment.status === 'completed') {
+      const lines = await buildPaymentLedgerCreditLines(payment);
+      const paymentsCategory = await getOrCreatePaymentsCategory(payment.college, req.user._id);
+      const paymentLedger = await Ledger.create({
+        entryDate: payment.paymentDate,
+        entryType: 'payment',
+        lines,
+        description: `Payment received: ${payment.paymentNumber}`,
+        reference: payment.paymentNumber,
+        referenceId: payment._id,
+        referenceModel: 'Payment',
+        category: paymentsCategory._id,
+        student: payment.student,
+        college: payment.college,
+        createdBy: req.user._id
+      });
+      await Ledger.applyToAccounts(paymentLedger);
+      await Income.create({
+        title: `Payment: ${payment.paymentNumber}`,
+        amount: payment.amount,
+        date: payment.paymentDate,
+        category: paymentsCategory._id,
+        account: payment.account,
+        student: payment.student,
+        college: payment.college,
+        referenceNumber: payment.paymentNumber,
+        notes: payment.notes || (payment.invoice ? `Invoice payment` : 'Payment received'),
+        payment: payment._id,
+        createdBy: req.user._id
+      });
+    } else if (ledgerNeedsRebuild) {
+      const ledger = await Ledger.findOne({
+        referenceId: payment._id,
+        referenceModel: 'Payment'
+      });
+      if (ledger) {
+        await Ledger.revertFromAccounts(ledger);
+        const lines = await buildPaymentLedgerCreditLines(payment);
         const paymentsCategory = await getOrCreatePaymentsCategory(payment.college, req.user._id);
-        const paymentLedger = await Ledger.create({
-          entryDate: payment.paymentDate,
-          entryType: 'payment',
-          lines: [{
-            account: account._id,
-            transactionType: 'credit',
-            amount: payment.amount,
-            balanceAfter: account.balance
-          }],
-          description: `Payment received: ${payment.paymentNumber}`,
-          reference: payment.paymentNumber,
-          referenceId: payment._id,
-          referenceModel: 'Payment',
-          category: paymentsCategory._id,
-          student: payment.student,
-          college: payment.college,
-          createdBy: req.user._id
-        });
-        await Ledger.applyToAccounts(paymentLedger);
-        // Record payment as income (Payments category)
-        await Income.create({
-          title: `Payment: ${payment.paymentNumber}`,
+        ledger.lines = lines;
+        ledger.entryDate = payment.paymentDate;
+        ledger.category = paymentsCategory._id;
+        ledger.updatedBy = req.user._id;
+        await ledger.save();
+        await Ledger.applyToAccounts(ledger);
+      }
+      await Income.findOneAndUpdate(
+        { payment: payment._id },
+        {
           amount: payment.amount,
           date: payment.paymentDate,
-          category: paymentsCategory._id,
           account: payment.account,
-          student: payment.student,
-          college: payment.college,
-          referenceNumber: payment.paymentNumber,
-          notes: payment.notes || (payment.invoice ? `Invoice payment` : 'Payment received'),
-          payment: payment._id,
-          createdBy: req.user._id
-        });
-      } else if (oldStatus === 'completed' && payment.status !== 'completed') {
-        // Cancel the income record linked to this payment (for reporting; account already reverted above)
-        await Income.findOneAndUpdate(
-          { payment: payment._id },
-          { isCancelled: true, updatedBy: req.user._id }
-        );
-      } else if (oldStatus === 'completed' && payment.status === 'completed' && oldAmount !== payment.amount) {
-        // Update amount
-        account.balance = account.balance - oldAmount + payment.amount;
-        const ledger = await Ledger.findOne({
-          referenceId: payment._id,
-          referenceModel: 'Payment'
-        });
-        if (ledger) {
-          await Ledger.revertFromAccounts(ledger);
-          const paymentsCategory = await getOrCreatePaymentsCategory(payment.college, req.user._id);
-          ledger.lines = [{
-            account: account._id,
-            transactionType: 'credit',
-            amount: payment.amount,
-            balanceAfter: account.balance
-          }];
-          ledger.category = paymentsCategory._id;
-          ledger.updatedBy = req.user._id;
-          await ledger.save();
-          await Ledger.applyToAccounts(ledger);
+          updatedBy: req.user._id
         }
-        // Update linked income amount for reporting
-        await Income.findOneAndUpdate(
-          { payment: payment._id },
-          { amount: payment.amount, updatedBy: req.user._id }
-        );
-      }
-
-      account.updatedBy = req.user._id;
-      await account.save();
+      );
     }
 
     // Update invoice if linked
@@ -2480,12 +2722,23 @@ const updatePayment = async (req, res, next) => {
       .populate('invoice', 'invoiceNumber totalAmount')
       .populate('student', 'name studentId')
       .populate('account', 'name accountType')
+      .populate('amountSplits.account', 'name accountType')
       .populate('college', 'name code')
       .populate('createdBy', 'name email')
       .populate('updatedBy', 'name email');
 
     res.json({ success: true, data: updated });
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: error.message || 'Validation failed',
+        errors: error.errors
+      });
+    }
     if (error.code === 11000) {
       res.status(409).json({
         success: false,

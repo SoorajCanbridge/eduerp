@@ -61,6 +61,7 @@ const router = express.Router();
 
 const categoryTypes = ['income', 'expense', 'both'];
 const paymentMethods = ['cash', 'bank-transfer', 'upi', 'cheque', 'card', 'other'];
+const paymentMethodsWithMixed = [...paymentMethods, 'mixed'];
 const invoiceStatuses = ['draft', 'sent', 'paid', 'overdue', 'cancelled'];
 const taxCalculationMethods = ['product', 'total'];
 const accountTypes = [
@@ -817,6 +818,47 @@ const ledgerUpdateValidators = [
 ];
 
 // PAYMENT validators
+/** Map `accountSplits` → `amountSplits` so one validator set covers both client naming styles. */
+const aliasPaymentSplitsPayload = (req, res, next) => {
+  if (req.body && !req.body.amountSplits && Array.isArray(req.body.accountSplits)) {
+    req.body.amountSplits = req.body.accountSplits;
+  }
+  next();
+};
+
+const paymentMethodBodyValidatorCreate = (value, { req }) => {
+  const splits = req.body.amountSplits || req.body.accountSplits;
+  const hasSplits = Array.isArray(splits) && splits.length > 0;
+  if (!hasSplits) {
+    if (value == null || value === '') {
+      throw new Error('paymentMethod is required when amountSplits is not used');
+    }
+    if (!paymentMethods.includes(value)) {
+      throw new Error('Payment method must be a valid method');
+    }
+  } else if (value != null && value !== '' && !paymentMethodsWithMixed.includes(value)) {
+    throw new Error('Payment method must be a valid method');
+  }
+  return true;
+};
+
+/** Same as create, but paymentMethod is optional when not sending amountSplits (partial updates). */
+const paymentMethodBodyValidatorUpdate = (value, { req }) => {
+  const splits = req.body.amountSplits || req.body.accountSplits;
+  const hasSplits = Array.isArray(splits) && splits.length > 0;
+  if (!hasSplits) {
+    if (value == null || value === '') {
+      return true;
+    }
+    if (!paymentMethods.includes(value)) {
+      throw new Error('Payment method must be a valid method');
+    }
+  } else if (value != null && value !== '' && !paymentMethodsWithMixed.includes(value)) {
+    throw new Error('Payment method must be a valid method');
+  }
+  return true;
+};
+
 const paymentCreateValidators = [
   body('paymentNumber')
     .optional()
@@ -830,9 +872,49 @@ const paymentCreateValidators = [
   body('amount')
     .isFloat({ min: 0 })
     .withMessage('Amount must be a positive number'),
-  body('paymentMethod')
+  body('paymentMethod').custom(paymentMethodBodyValidatorCreate),
+  body('amountSplits')
+    .optional()
+    .isArray()
+    .withMessage('amountSplits must be an array'),
+  body('amountSplits.*.amount')
+    .if(body('amountSplits').isArray({ min: 1 }))
+    .isFloat({ min: 0 })
+    .withMessage('Each split amount must be a non-negative number'),
+  body('amountSplits.*.paymentMethod')
+    .if(body('amountSplits').isArray({ min: 1 }))
+    .optional()
     .isIn(paymentMethods)
-    .withMessage('Payment method must be a valid method'),
+    .withMessage('Each split must have a valid payment method when provided'),
+  body('amountSplits.*.account')
+    .optional()
+    .isMongoId()
+    .withMessage('Each split account must be a valid Mongo ID'),
+  body('amountSplits.*.accountId')
+    .optional()
+    .isMongoId()
+    .withMessage('Each split accountId must be a valid Mongo ID'),
+  body('accountSplits')
+    .optional()
+    .isArray()
+    .withMessage('accountSplits must be an array'),
+  body('accountSplits.*.amount')
+    .if(body('accountSplits').isArray({ min: 1 }))
+    .isFloat({ min: 0 })
+    .withMessage('Each account split amount must be a non-negative number'),
+  body('accountSplits.*.paymentMethod')
+    .if(body('accountSplits').isArray({ min: 1 }))
+    .optional()
+    .isIn(paymentMethods)
+    .withMessage('Each account split must have a valid payment method when provided'),
+  body('accountSplits.*.account')
+    .optional()
+    .isMongoId()
+    .withMessage('Each account split account must be a valid Mongo ID'),
+  body('accountSplits.*.accountId')
+    .optional()
+    .isMongoId()
+    .withMessage('Each account split accountId must be a valid Mongo ID'),
   body('status')
     .optional()
     .isIn(paymentStatuses)
@@ -872,10 +954,49 @@ const paymentUpdateValidators = [
     .optional()
     .isFloat({ min: 0 })
     .withMessage('Amount must be a positive number'),
-  body('paymentMethod')
+  body('paymentMethod').optional().custom(paymentMethodBodyValidatorUpdate),
+  body('amountSplits')
+    .optional()
+    .isArray()
+    .withMessage('amountSplits must be an array'),
+  body('amountSplits.*.amount')
+    .if(body('amountSplits').isArray({ min: 1 }))
+    .isFloat({ min: 0 })
+    .withMessage('Each split amount must be a non-negative number'),
+  body('amountSplits.*.paymentMethod')
+    .if(body('amountSplits').isArray({ min: 1 }))
     .optional()
     .isIn(paymentMethods)
-    .withMessage('Payment method must be a valid method'),
+    .withMessage('Each split must have a valid payment method when provided'),
+  body('amountSplits.*.account')
+    .optional()
+    .isMongoId()
+    .withMessage('Each split account must be a valid Mongo ID'),
+  body('amountSplits.*.accountId')
+    .optional()
+    .isMongoId()
+    .withMessage('Each split accountId must be a valid Mongo ID'),
+  body('accountSplits')
+    .optional()
+    .isArray()
+    .withMessage('accountSplits must be an array'),
+  body('accountSplits.*.amount')
+    .if(body('accountSplits').isArray({ min: 1 }))
+    .isFloat({ min: 0 })
+    .withMessage('Each account split amount must be a non-negative number'),
+  body('accountSplits.*.paymentMethod')
+    .if(body('accountSplits').isArray({ min: 1 }))
+    .optional()
+    .isIn(paymentMethods)
+    .withMessage('Each account split must have a valid payment method when provided'),
+  body('accountSplits.*.account')
+    .optional()
+    .isMongoId()
+    .withMessage('Each account split account must be a valid Mongo ID'),
+  body('accountSplits.*.accountId')
+    .optional()
+    .isMongoId()
+    .withMessage('Each account split accountId must be a valid Mongo ID'),
   body('status')
     .optional()
     .isIn(paymentStatuses)
@@ -1019,12 +1140,14 @@ router.get(
 router.post(
   '/payments',
   requirePermission('payments', 'edit'),
+  aliasPaymentSplitsPayload,
   paymentCreateValidators,
   createPayment
 );
 router.put(
   '/payments/:id',
   requirePermission('payments', 'edit'),
+  aliasPaymentSplitsPayload,
   paymentUpdateValidators,
   updatePayment
 );

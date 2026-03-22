@@ -17,7 +17,7 @@ const handleValidation = (req, res) => {
 
 const getAllColleges = async (req, res, next) => {
   try {
-    const colleges = await College.find();
+    const colleges = await College.find().select('-subscription');
     res.json({ success: true, data: colleges });
   } catch (error) {
     next(error);
@@ -26,7 +26,7 @@ const getAllColleges = async (req, res, next) => {
 
 const getCollegeById = async (req, res, next) => {
   try {
-    const college = await College.findById(req.params.id);
+    const college = await College.findById(req.params.id).select('-subscription');
     if (!college) {
       return res
         .status(404)
@@ -62,7 +62,53 @@ const createCollege = async (req, res, next) => {
       });
     }
 
-    res.status(201).json({ success: true, data: college });
+    const data = college.toObject ? college.toObject() : college;
+    delete data.subscription;
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    if (error.code === 11000) {
+      res.status(409).json({ success: false, message: 'College code already exists' });
+    } else {
+      next(error);
+    }
+  }
+};
+
+/**
+ * Create college for a logged-in client user and assign that college to the user.
+ * POST /client/college
+ */
+const createCollegeForClient = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+  try {
+    const college = await College.create(req.body);
+    const collegeId = college._id;
+
+    // let ownerRole = await Role.findOne({ name: 'owner', college: collegeId });
+    // if (!ownerRole) {
+    //   ownerRole = await Role.create({
+    //     name: 'owner',
+    //     description: 'College owner with full access to all modules',
+    //     permissions: getOwnerPermissions(),
+    //     college: collegeId
+    //   });
+    // }
+
+    if (req.body.clientId) {
+      await User.findByIdAndUpdate(req.body.clientId, {
+        college: collegeId,
+      });
+    }
+
+    const collegeData = college.toObject ? college.toObject() : college;
+    delete collegeData.subscription;
+
+    res.status(201).json({
+      success: true,
+      data: {
+        college: collegeData,
+      }
+    });
   } catch (error) {
     if (error.code === 11000) {
       res.status(409).json({ success: false, message: 'College code already exists' });
@@ -108,7 +154,9 @@ const updateCollege = async (req, res, next) => {
     if (establishedYear) college.establishedYear = establishedYear;
 
     await college.save();
-    res.json({ success: true, data: college });
+    const data = college.toObject ? college.toObject() : college;
+    delete data.subscription;
+    res.json({ success: true, data });
   } catch (error) {
     if (error.code === 11000) {
       res.status(409).json({ success: false, message: 'College code already exists' });
@@ -195,11 +243,13 @@ const uploadLogo = async (req, res, next) => {
     const apiPrefix = require('../config/env').apiPrefix;
     const logoUrl = `${baseUrl}${apiPrefix}/image/${storedPath}`;
 
+    const collegeData = college.toObject ? college.toObject() : college;
+    delete collegeData.subscription;
     res.status(200).json({
       success: true,
       message: 'Logo uploaded successfully',
       data: {
-        college: college,
+        college: collegeData,
         logoPath: storedPath,
         logoUrl: logoUrl
       }
@@ -214,6 +264,7 @@ module.exports = {
   getAllColleges,
   getCollegeById,
   createCollege,
+  createCollegeForClient,
   updateCollege,
   deleteCollege,
   uploadLogo
