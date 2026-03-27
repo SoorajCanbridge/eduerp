@@ -1059,8 +1059,23 @@ const createInvoice = async (req, res, next) => {
       });
     }
     
-    const discount = req.body.discount || 0;
-    const totalAmount = subtotal + taxAmount - discount;
+    const itemDiscountSum = items.reduce((sum, item) => {
+      const d = item?.discount !== undefined ? Number(item.discount) : 0;
+      return sum + (Number.isFinite(d) ? d : 0);
+    }, 0);
+
+    // If invoice.discount isn't provided, treat sum(item.discount) as invoice discount
+    // (so it is equal by default).
+    const effectiveDiscount = req.body.discount !== undefined ? req.body.discount : itemDiscountSum;
+
+    if (itemDiscountSum > effectiveDiscount) {
+      return res.status(400).json({
+        success: false,
+        message: 'Sum of item discounts cannot be greater than invoice discount'
+      });
+    }
+
+    const totalAmount = subtotal + taxAmount - effectiveDiscount;
     
     // Calculate paidAmount from items if not explicitly provided (cap at totalAmount = includes tax)
     const itemPaidTotal = items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
@@ -1102,6 +1117,7 @@ const createInvoice = async (req, res, next) => {
       taxCalculationMethod,
       subtotal,
       taxAmount,
+      discount: effectiveDiscount,
       totalAmount,
       paidAmount,
       taxPaidAmount,
@@ -1196,7 +1212,19 @@ const updateInvoice = async (req, res, next) => {
         });
       }
       
-      const discount = req.body.discount !== undefined ? req.body.discount : invoice.discount;
+      const itemDiscountSum = items.reduce((sum, item) => {
+        const d = item?.discount !== undefined ? Number(item.discount) : 0;
+        return sum + (Number.isFinite(d) ? d : 0);
+      }, 0);
+      const discount =
+        req.body.discount !== undefined ? req.body.discount : itemDiscountSum;
+
+      if (itemDiscountSum > discount) {
+        return res.status(400).json({
+          success: false,
+          message: 'Sum of item discounts cannot be greater than invoice discount'
+        });
+      }
       const totalAmount = subtotal + taxAmount - discount;
 
       invoice.items = items;
@@ -1215,6 +1243,16 @@ const updateInvoice = async (req, res, next) => {
     } else if (req.body.taxRate !== undefined || req.body.discount !== undefined || req.body.taxCalculationMethod !== undefined) {
       const taxRate = req.body.taxRate !== undefined ? req.body.taxRate : invoice.taxRate;
       const discount = req.body.discount !== undefined ? req.body.discount : invoice.discount;
+      const itemDiscountSum = invoice.items.reduce((sum, item) => {
+        const d = item?.discount !== undefined ? Number(item.discount) : 0;
+        return sum + (Number.isFinite(d) ? d : 0);
+      }, 0);
+      if (itemDiscountSum > discount) {
+        return res.status(400).json({
+          success: false,
+          message: 'Sum of item discounts cannot be greater than invoice discount'
+        });
+      }
       
       let taxAmount = 0;
       if (taxCalculationMethod === 'product') {
@@ -1483,6 +1521,110 @@ const payInvoiceItems = async (req, res, next) => {
   }
 };
 
+// Apply item-level discounts while enforcing total discount limit
+const applyInvoiceItemDiscounts = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const invoice = await Invoice.findById(req.params.id);
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: 'Invoice not found' });
+    }
+
+    const itemDiscounts = Array.isArray(req.body.itemDiscounts) ? req.body.itemDiscounts : [];
+    if (itemDiscounts.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'itemDiscounts must be a non-empty array'
+      });
+    }
+
+    const effectiveDiscount =
+      req.body.discount !== undefined ? Number(req.body.discount) : Number(invoice.discount || 0);
+
+    if (!Number.isFinite(effectiveDiscount) || effectiveDiscount < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'discount must be a non-negative number'
+      });
+    }
+
+    const seenIndexes = new Set();
+    itemDiscounts.forEach((row) => {
+      const idx = Number(row.itemIndex);
+      const amount = Number(row.discount);
+
+      if (!Number.isInteger(idx) || idx < 0 || idx >= invoice.items.length) {
+        throw new Error(`Invalid item index: ${row.itemIndex}`);
+      }
+      if (seenIndexes.has(idx)) {
+        throw new Error(`Duplicate item index: ${idx}`);
+      }
+      seenIndexes.add(idx);
+
+      if (!Number.isFinite(amount) || amount < 0) {
+        throw new Error(`Discount must be non-negative for item index: ${idx}`);
+      }
+      if (amount > (invoice.items[idx].amount || 0)) {
+        throw new Error(`Item discount cannot exceed item amount for item index: ${idx}`);
+      }
+
+      invoice.items[idx].discount = amount;
+    });
+
+    const totalItemDiscount = invoice.items.reduce((sum, item) => {
+      const d = item?.discount !== undefined ? Number(item.discount) : 0;
+      return sum + (Number.isFinite(d) ? d : 0);
+    }, 0);
+
+    if (totalItemDiscount > effectiveDiscount) {
+      return res.status(400).json({
+        success: false,
+        message: 'Total item discounts cannot be greater than invoice discount'
+      });
+    }
+
+    invoice.discount = effectiveDiscount;
+    invoice.totalAmount = invoice.subtotal + invoice.taxAmount - effectiveDiscount;
+    invoice.paidAmount = Math.min(invoice.paidAmount || 0, invoice.totalAmount);
+    invoice.balanceAmount = invoice.totalAmount - invoice.paidAmount;
+
+    if (invoice.balanceAmount <= 0 && invoice.status === 'sent') {
+      invoice.status = 'paid';
+    } else if (
+      invoice.dueDate &&
+      invoice.balanceAmount > 0 &&
+      new Date() > invoice.dueDate &&
+      invoice.status === 'sent'
+    ) {
+      invoice.status = 'overdue';
+    }
+
+    invoice.updatedBy = req.user._id;
+    await invoice.save();
+
+    const updated = await Invoice.findById(invoice._id)
+      .populate('student', 'name studentId')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('savedContent', 'name')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    return res.json({ success: true, data: updated });
+  } catch (error) {
+    if (
+      error.message.includes('Invalid item index') ||
+      error.message.includes('Duplicate item index') ||
+      error.message.includes('Discount must be non-negative') ||
+      error.message.includes('Item discount cannot exceed item amount')
+    ) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
+    return next(error);
+  }
+};
+
 // SAVED INVOICE CONTENT CRUD
 const getSavedInvoiceContents = async (req, res, next) => {
   try {
@@ -1561,8 +1703,23 @@ const createSavedInvoiceContent = async (req, res, next) => {
       });
     }
     
-    const discount = req.body.discount || 0;
-    const totalAmount = subtotal + taxAmount - discount;
+    const itemDiscountSum = items.reduce((sum, item) => {
+      const d = item?.discount !== undefined ? Number(item.discount) : 0;
+      return sum + (Number.isFinite(d) ? d : 0);
+    }, 0);
+
+    // If invoice content discount isn't provided, treat sum(item.discount) as content discount
+    // so it is "equal" by default.
+    const effectiveDiscount = req.body.discount !== undefined ? req.body.discount : itemDiscountSum;
+
+    if (itemDiscountSum > effectiveDiscount) {
+      return res.status(400).json({
+        success: false,
+        message: 'Sum of item discounts cannot be greater than saved invoice content discount'
+      });
+    }
+
+    const totalAmount = subtotal + taxAmount - effectiveDiscount;
 
     const data = {
       ...req.body,
@@ -1570,6 +1727,7 @@ const createSavedInvoiceContent = async (req, res, next) => {
       taxCalculationMethod,
       subtotal,
       taxAmount,
+      discount: effectiveDiscount,
       totalAmount,
       college: req.body.college || req.user.college,
       createdBy: req.user._id
@@ -1644,17 +1802,47 @@ const updateSavedInvoiceContent = async (req, res, next) => {
         });
       }
       
-      const discount = req.body.discount !== undefined ? req.body.discount : content.discount;
+      const itemDiscountSum = items.reduce((sum, item) => {
+        const d = item?.discount !== undefined ? Number(item.discount) : 0;
+        return sum + (Number.isFinite(d) ? d : 0);
+      }, 0);
+
+      const discount =
+        req.body.discount !== undefined ? req.body.discount : itemDiscountSum;
+
+      if (itemDiscountSum > discount) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'Sum of item discounts cannot be greater than saved invoice content discount'
+        });
+      }
+
       const totalAmount = subtotal + taxAmount - discount;
 
       content.items = items;
       content.taxCalculationMethod = taxCalculationMethod;
       content.subtotal = subtotal;
       content.taxAmount = taxAmount;
+      content.discount = discount;
       content.totalAmount = totalAmount;
     } else if (req.body.taxRate !== undefined || req.body.discount !== undefined || req.body.taxCalculationMethod !== undefined) {
       const taxRate = req.body.taxRate !== undefined ? req.body.taxRate : content.taxRate;
-      const discount = req.body.discount !== undefined ? req.body.discount : content.discount;
+      const itemDiscountSum = content.items.reduce((sum, item) => {
+        const d = item?.discount !== undefined ? Number(item.discount) : 0;
+        return sum + (Number.isFinite(d) ? d : 0);
+      }, 0);
+
+      const discount =
+        req.body.discount !== undefined ? req.body.discount : itemDiscountSum;
+
+      if (itemDiscountSum > discount) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'Sum of item discounts cannot be greater than saved invoice content discount'
+        });
+      }
       
       let taxAmount = 0;
       if (taxCalculationMethod === 'product') {
@@ -2830,7 +3018,7 @@ module.exports = {
   updateInvoice,
   deleteInvoice,
   payInvoiceItems,
-  payInvoiceItems,
+  applyInvoiceItemDiscounts,
   // saved invoice content
   getSavedInvoiceContents,
   getSavedInvoiceContentById,

@@ -30,6 +30,7 @@ const {
   updateInvoice,
   deleteInvoice,
   payInvoiceItems,
+  applyInvoiceItemDiscounts,
   // saved invoice content
   getSavedInvoiceContents,
   getSavedInvoiceContentById,
@@ -513,6 +514,10 @@ const invoiceCreateValidators = [
     .optional()
     .isFloat({ min: 0 })
     .withMessage('Item paid amount must be a positive number'),
+  body('items.*.discount')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('Item discount must be a positive number'),
   body('taxCalculationMethod')
     .optional()
     .isIn(taxCalculationMethods)
@@ -573,6 +578,10 @@ const invoiceUpdateValidators = [
     .optional()
     .isFloat({ min: 0 })
     .withMessage('Item paid amount must be a positive number'),
+  body('items.*.discount')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('Item discount must be a positive number'),
   body('taxCalculationMethod')
     .optional()
     .isIn(taxCalculationMethods)
@@ -618,6 +627,22 @@ const payInvoiceItemsValidators = [
     .trim()
 ];
 
+const applyInvoiceItemDiscountsValidators = [
+  body('discount')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('discount must be a non-negative number'),
+  body('itemDiscounts')
+    .isArray({ min: 1 })
+    .withMessage('itemDiscounts must be a non-empty array'),
+  body('itemDiscounts.*.itemIndex')
+    .isInt({ min: 0 })
+    .withMessage('itemIndex must be a non-negative integer'),
+  body('itemDiscounts.*.discount')
+    .isFloat({ min: 0 })
+    .withMessage('Item discount must be a non-negative number')
+];
+
 // SAVED INVOICE CONTENT validators
 const savedInvoiceContentCreateValidators = [
   body('name')
@@ -645,6 +670,10 @@ const savedInvoiceContentCreateValidators = [
     .optional()
     .isFloat({ min: 0 })
     .withMessage('Item tax amount must be a positive number'),
+  body('items.*.discount')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('Item discount must be a positive number'),
   body('taxCalculationMethod')
     .optional()
     .isIn(taxCalculationMethods)
@@ -681,6 +710,10 @@ const savedInvoiceContentUpdateValidators = [
     .optional()
     .isFloat({ min: 0 })
     .withMessage('Item tax amount must be a positive number'),
+  body('items.*.discount')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('Item discount must be a positive number'),
   body('taxCalculationMethod')
     .optional()
     .isIn(taxCalculationMethods)
@@ -1044,6 +1077,12 @@ router.post(
   requirePermission('invoice', 'edit'),
   payInvoiceItemsValidators,
   payInvoiceItems
+);
+router.put(
+  '/invoices/:id/apply-item-discounts',
+  requirePermission('invoice', 'edit'),
+  applyInvoiceItemDiscountsValidators,
+  applyInvoiceItemDiscounts
 );
 
 // SAVED INVOICE CONTENT routes

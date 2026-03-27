@@ -23,6 +23,12 @@ const invoiceItemSchema = new mongoose.Schema({
     required: true,
     min: 0
   },
+  // Discount allocated to this specific item (must be <= invoice.discount total).
+  discount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
   taxRate: {
     type: Number,
     default: 0,

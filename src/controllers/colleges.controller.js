@@ -84,19 +84,20 @@ const createCollegeForClient = async (req, res, next) => {
     const college = await College.create(req.body);
     const collegeId = college._id;
 
-    // let ownerRole = await Role.findOne({ name: 'owner', college: collegeId });
-    // if (!ownerRole) {
-    //   ownerRole = await Role.create({
-    //     name: 'owner',
-    //     description: 'College owner with full access to all modules',
-    //     permissions: getOwnerPermissions(),
-    //     college: collegeId
-    //   });
-    // }
+    let ownerRole = await Role.findOne({ name: 'owner', college: collegeId });
+    if (!ownerRole) {
+      ownerRole = await Role.create({
+        name: 'owner',
+        description: 'College owner with full access to all modules',
+        permissions: getOwnerPermissions(),
+        college: collegeId
+      });
+    }
 
     if (req.body.clientId) {
       await User.findByIdAndUpdate(req.body.clientId, {
         college: collegeId,
+        role: ownerRole._id
       });
     }
 
@@ -111,7 +112,7 @@ const createCollegeForClient = async (req, res, next) => {
     });
   } catch (error) {
     if (error.code === 11000) {
-      res.status(409).json({ success: false, message: 'College code already exists' });
+      res.status(409).json({ success: false, message: 'Duplicate value already exists' });
     } else {
       next(error);
     }

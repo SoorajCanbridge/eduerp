@@ -23,6 +23,12 @@ const savedInvoiceItemSchema = new mongoose.Schema({
     required: true,
     min: 0
   },
+  // Discount allocated to this item (must be <= saved content discount total).
+  discount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
   taxRate: {
     type: Number,
     default: 0,

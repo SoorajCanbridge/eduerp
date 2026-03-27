@@ -7,6 +7,12 @@ const incomeSchema = new mongoose.Schema(
       required: true,
       trim: true
     },
+    // Per-college serial number (auto-incremented).
+    // Example: for each `college`, incomes will be numbered 1,2,3... independently.
+    serialNumber: {
+      type: Number,
+      default: undefined
+    },
     amount: {
       type: Number,
       required: true,
@@ -77,11 +83,34 @@ const incomeSchema = new mongoose.Schema(
 incomeSchema.index({ college: 1, date: 1 });
 incomeSchema.index({ category: 1, date: 1 });
 incomeSchema.index({ account: 1, date: 1 });
+// Prevent accidental duplicates when multiple records are created concurrently.
+// Only enforce uniqueness for docs where `serialNumber` is a number.
+incomeSchema.index(
+  { college: 1, serialNumber: 1 },
+  { unique: true, partialFilterExpression: { serialNumber: { $type: 'number' } } }
+);
+incomeSchema.index({ college: 1, serialNumber: -1 });
 incomeSchema.index({ payment: 1 }, { sparse: true });
 
 // Store original values for update operations
 incomeSchema.pre('save', async function (next) {
   if (this.isNew) {
+    // Auto-fill serial number for new incomes (per college).
+    if (this.serialNumber == null) {
+      if (!this.college) {
+        // Fallback: if college isn't set, default to 1.
+        // (Normal flow should always set `college` via controller/user context.)
+        this.serialNumber = 1;
+      } else {
+        const lastIncome = await this.constructor
+          .findOne({ college: this.college })
+          .sort({ serialNumber: -1 })
+          .select('serialNumber');
+
+        this.serialNumber = (lastIncome?.serialNumber || 0) + 1;
+      }
+    }
+
     // New income - will be handled in post save
     return null;
   }

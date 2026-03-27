@@ -7,6 +7,12 @@ const expenseSchema = new mongoose.Schema(
       required: true,
       trim: true
     },
+    // Per-college serial number (auto-incremented).
+    // Example: for each `college`, expenses will be numbered 1,2,3... independently.
+    serialNumber: {
+      type: Number,
+      default: undefined
+    },
     amount: {
       type: Number,
       required: true,
@@ -73,10 +79,33 @@ const expenseSchema = new mongoose.Schema(
 expenseSchema.index({ college: 1, date: 1 });
 expenseSchema.index({ category: 1, date: 1 });
 expenseSchema.index({ account: 1, date: 1 });
+// Prevent accidental duplicates when multiple records are created concurrently.
+// Only enforce uniqueness for docs where `serialNumber` is a number.
+expenseSchema.index(
+  { college: 1, serialNumber: 1 },
+  { unique: true, partialFilterExpression: { serialNumber: { $type: 'number' } } }
+);
+expenseSchema.index({ college: 1, serialNumber: -1 });
 
 // Store original values for update operations
 expenseSchema.pre('save', async function (next) {
   if (this.isNew) {
+    // Auto-fill serial number for new expenses (per college).
+    if (this.serialNumber == null) {
+      if (!this.college) {
+        // Fallback: if college isn't set, default to 1.
+        // (Normal flow should always set `college` via controller/user context.)
+        this.serialNumber = 1;
+      } else {
+        const lastExpense = await this.constructor
+          .findOne({ college: this.college })
+          .sort({ serialNumber: -1 })
+          .select('serialNumber');
+
+        this.serialNumber = (lastExpense?.serialNumber || 0) + 1;
+      }
+    }
+
     // New expense - will be handled in post save
     return null;
   }
