@@ -1429,7 +1429,7 @@ const payInvoiceItems = async (req, res, next) => {
       invoice.balanceAmount > 0 &&
       new Date() > invoice.dueDate &&
       invoice.status === 'sent'
-    ) {
+    ) { 
       invoice.status = 'overdue';
     }
 
@@ -1437,31 +1437,46 @@ const payInvoiceItems = async (req, res, next) => {
     await invoice.save();
 
     const totalPaymentAmount = itemPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
-    const resolvedAccountId = accountId || invoice.account;
+    const normalizedSplits = normalizeAmountSplitsFromBody(req.body);
+    const hasSplits = Array.isArray(normalizedSplits) && normalizedSplits.length > 0;
+    const resolvedAccountId =
+      accountId || invoice.account || (hasSplits ? normalizedSplits[0].account : undefined);
     let payment = null;
 
-    if (totalPaymentAmount > 0 && resolvedAccountId) {
-      const account = await Account.findById(resolvedAccountId);
-      if (!account) {
-        return res.status(404).json({ success: false, message: 'Account not found' });
-      }
+    if (totalPaymentAmount > 0) {
       const collegeId = invoice.college || req.user.college;
-      if (account.college && account.college.toString() !== collegeId.toString()) {
-        return res.status(400).json({ success: false, message: 'Account does not belong to invoice college' });
+      if (!resolvedAccountId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Account is required (payment account or split account)'
+        });
       }
 
-      payment = await Payment.create({
+      const payloadForAccountValidation = { account: resolvedAccountId };
+      if (hasSplits) {
+        payloadForAccountValidation.amountSplits = normalizedSplits;
+      }
+      await assertPaymentAccountsValid(payloadForAccountValidation, collegeId);
+
+      const paymentData = {
         paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
         amount: totalPaymentAmount,
-        paymentMethod: paymentMethod || 'cash',
         status: 'completed',
-        account: account._id,
+        account: resolvedAccountId,
         invoice: invoice._id,
         student: invoice.student,
         college: collegeId,
         notes: notes || `Invoice ${invoice.invoiceNumber || invoice._id} item payment`,
         createdBy: req.user._id
-      });
+      };
+      if (paymentMethod || !hasSplits) {
+        paymentData.paymentMethod = paymentMethod || 'cash';
+      }
+      if (hasSplits) {
+        paymentData.amountSplits = normalizedSplits;
+      }
+
+      payment = await Payment.create(paymentData);
 
       const lines = await buildPaymentLedgerCreditLines(payment);
       const paymentsCategory = await getOrCreatePaymentsCategory(collegeId, req.user._id);
@@ -1513,6 +1528,9 @@ const payInvoiceItems = async (req, res, next) => {
     }
     res.json(response);
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
     if (error.message.includes('Invalid item index') || error.message.includes('Payment amount')) {
       res.status(400).json({ success: false, message: error.message });
     } else {
