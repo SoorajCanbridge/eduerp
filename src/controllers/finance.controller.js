@@ -1009,126 +1009,152 @@ const getInvoiceById = async (req, res, next) => {
   }
 };
 
+const round2 = (num) => Math.round((Number(num) || 0) * 100) / 100;
+
 const createInvoice = async (req, res, next) => {
   if (handleValidation(req, res)) return;
 
   try {
-    // Calculate amounts
-    const items = req.body.items || [];
+    let items = Array.isArray(req.body.items) ? req.body.items : [];
     const taxCalculationMethod = req.body.taxCalculationMethod || 'total';
-    
-    // Ensure each item has paidAmount initialized
-    items.forEach(item => {
-      if (item.paidAmount === undefined) {
-        item.paidAmount = 0;
-      }
-      // Initialize tax fields
-      if (item.taxRate === undefined) {
-        item.taxRate = 0;
-      }
-      if (item.taxAmount === undefined) {
-        item.taxAmount = 0;
-      }
-      // Ensure paidAmount doesn't exceed item total (amount + tax)
-      const itemTotal = (item.amount || 0) + (item.taxAmount || 0);
-      if (item.paidAmount > itemTotal) {
-        item.paidAmount = itemTotal;
-      }
+
+    // 🔹 Normalize items
+    items = items.map((item) => {
+      const amount =
+        item.amount !== undefined
+          ? Number(item.amount)
+          : (Number(item.quantity) || 0) * (Number(item.unitPrice) || 0);
+
+      return {
+        ...item,
+        amount: round2(amount),
+        discount: round2(item.discount || 0),
+        taxRate: round2(item.taxRate || 0),
+        taxAmount: 0,
+        paidAmount: round2(item.paidAmount || 0),
+      };
     });
-    
-    // Calculate subtotal
-    const subtotal = items.reduce((sum, item) => sum + (item.amount || item.quantity * item.unitPrice), 0);
-    
+
+    // 🔹 Subtotal
+    let subtotal = round2(
+      items.reduce((sum, item) => sum + item.amount, 0)
+    );
+
+    // 🔹 Tax Calculation
     let taxAmount = 0;
+
     if (taxCalculationMethod === 'product') {
-      // Product-level tax: calculate tax for each item and sum
-      items.forEach(item => {
-        if (item.taxRate > 0) {
-          item.taxAmount = (item.amount * item.taxRate) / 100;
-        }
+      items = items.map((item) => {
+        const tax = round2((item.amount * item.taxRate) / 100);
+        return { ...item, taxAmount: tax };
       });
-      taxAmount = items.reduce((sum, item) => sum + (item.taxAmount || 0), 0);
+
+      taxAmount = round2(
+        items.reduce((sum, item) => sum + item.taxAmount, 0)
+      );
     } else {
-      // Total-level tax: calculate tax on subtotal
-      const taxRate = req.body.taxRate || 0;
-      taxAmount = (subtotal * taxRate) / 100;
-      // Reset item tax amounts for total-level tax
-      items.forEach(item => {
-        item.taxAmount = 0;
-        item.taxRate = 0;
-      });
+      const taxRate = Number(req.body.taxRate) || 0;
+      taxAmount = round2((subtotal * taxRate) / 100);
+
+      // reset item tax
+      items = items.map((item) => ({
+        ...item,
+        taxRate: 0,
+        taxAmount: 0,
+      }));
     }
-    
-    const itemDiscountSum = items.reduce((sum, item) => {
-      const d = item?.discount !== undefined ? Number(item.discount) : 0;
-      return sum + (Number.isFinite(d) ? d : 0);
-    }, 0);
 
-    // If invoice.discount isn't provided, treat sum(item.discount) as invoice discount
-    // (so it is equal by default).
-    const effectiveDiscount = req.body.discount !== undefined ? req.body.discount : itemDiscountSum;
+    // 🔹 Discount (STRICT)
+    const itemDiscountSum = round2(
+      items.reduce((sum, item) => sum + item.discount, 0)
+    );
 
-    if (itemDiscountSum > effectiveDiscount) {
+    const discount = round2(Number(req.body.discount) || 0);
+
+    if (itemDiscountSum > discount) {
       return res.status(400).json({
         success: false,
-        message: 'Sum of item discounts cannot be greater than invoice discount'
+        message:
+          'Sum of item discounts cannot be greater than invoice discount',
       });
     }
 
-    const totalAmount = subtotal + taxAmount - effectiveDiscount;
-    
-    // Calculate paidAmount from items if not explicitly provided (cap at totalAmount = includes tax)
-    const itemPaidTotal = items.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
-    let paidAmount, taxPaidAmount = 0;
-    
-    if (req.body.paidAmount !== undefined) {
-      // If paidAmount is explicitly provided, distribute it for total-level tax
-      if (taxCalculationMethod === 'total') {
-        const totalPayable = subtotal + taxAmount;
-        if (totalPayable > 0) {
-          const paymentForItems = req.body.paidAmount * (subtotal / totalPayable);
-          taxPaidAmount = req.body.paidAmount * (taxAmount / totalPayable);
-          // Distribute to items proportionally
-          items.forEach(item => {
-            const proportion = item.amount / subtotal;
-            item.paidAmount = Math.min(item.amount, paymentForItems * proportion);
-          });
-          paidAmount = Math.min(req.body.paidAmount, totalAmount);
-        } else {
-          paidAmount = Math.min(req.body.paidAmount, totalAmount);
-        }
-      } else {
-        // Product-level tax: paidAmount is sum of item paidAmounts
-        paidAmount = Math.min(req.body.paidAmount, totalAmount);
-      }
+    // 🔹 Total
+    const totalAmount = round2(subtotal + taxAmount - discount);
+
+    if (totalAmount < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid invoice total',
+      });
+    }
+
+    // 🔹 Payment Logic (Simplified)
+    const itemLevelPaidProvided = items.some(
+      (i) => i.paidAmount && i.paidAmount > 0
+    );
+
+    let paidAmount = 0;
+
+    if (itemLevelPaidProvided) {
+      // cap per item
+      items = items.map((item) => {
+        const lineTotal = round2(item.amount + item.taxAmount);
+        return {
+          ...item,
+          paidAmount: Math.min(item.paidAmount, lineTotal),
+        };
+      });
+
+      const itemPaidTotal = round2(
+        items.reduce((sum, i) => sum + i.paidAmount, 0)
+      );
+
+      paidAmount = Math.min(itemPaidTotal, totalAmount);
     } else {
-      // Use item paidAmounts
-      if (taxCalculationMethod === 'total') {
-        paidAmount = Math.min(itemPaidTotal + (req.body.taxPaidAmount || 0), totalAmount);
-        taxPaidAmount = req.body.taxPaidAmount || 0;
-      } else {
-        paidAmount = Math.min(itemPaidTotal, totalAmount);
+      const requestedPaid = round2(Number(req.body.paidAmount) || 0);
+      paidAmount = Math.min(requestedPaid, totalAmount);
+
+      // distribute proportionally
+      const totalLineValue = items.reduce(
+        (sum, i) => sum + (i.amount + i.taxAmount),
+        0
+      );
+
+      if (totalLineValue > 0) {
+        items = items.map((item) => {
+          const lineTotal = item.amount + item.taxAmount;
+          const ratio = lineTotal / totalLineValue;
+
+          return {
+            ...item,
+            paidAmount: round2(paidAmount * ratio),
+          };
+        });
       }
     }
 
+    const balanceAmount = round2(totalAmount - paidAmount);
+
+    // 🔹 Final Data
     const data = {
       ...req.body,
       items,
       taxCalculationMethod,
       subtotal,
       taxAmount,
-      discount: effectiveDiscount,
+      discount,
       totalAmount,
       paidAmount,
-      taxPaidAmount,
-      balanceAmount: totalAmount - paidAmount,
+      balanceAmount,
       college: req.body.college || req.user.college,
-      createdBy: req.user._id
+      createdBy: req.user._id,
     };
-    // invoiceNumber is auto-generated in model pre-save when not provided
+
     if (!data.invoiceNumber) delete data.invoiceNumber;
 
     const invoice = await Invoice.create(data);
+
     const populated = await Invoice.findById(invoice._id)
       .populate('student', 'name studentId')
       .populate('account', 'name accountType')
@@ -1137,16 +1163,19 @@ const createInvoice = async (req, res, next) => {
       .populate('createdBy', 'name email')
       .populate('updatedBy', 'name email');
 
-    res.status(201).json({ success: true, data: populated });
+    res.status(201).json({
+      success: true,
+      data: populated,
+    });
   } catch (error) {
     if (error.code === 11000) {
-      res.status(409).json({
+      return res.status(409).json({
         success: false,
-        message: 'Invoice with this number already exists for this college'
+        message:
+          'Invoice with this number already exists for this college',
       });
-    } else {
-      next(error);
     }
+    next(error);
   }
 };
 
