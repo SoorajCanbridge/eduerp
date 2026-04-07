@@ -33,6 +33,10 @@ const expenseSchema = new mongoose.Schema(
       ref: 'Account',
       required: true
     },
+    recurringExpense: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'RecurringExpense'
+    },
     vendor: {
       type: String,
       trim: true
@@ -79,6 +83,7 @@ const expenseSchema = new mongoose.Schema(
 expenseSchema.index({ college: 1, date: 1 });
 expenseSchema.index({ category: 1, date: 1 });
 expenseSchema.index({ account: 1, date: 1 });
+expenseSchema.index({ recurringExpense: 1, date: -1 });
 // Prevent accidental duplicates when multiple records are created concurrently.
 // Only enforce uniqueness for docs where `serialNumber` is a number.
 expenseSchema.index(

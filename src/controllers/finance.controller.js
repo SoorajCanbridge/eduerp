@@ -1,6 +1,7 @@
 const { validationResult } = require('express-validator');
 const Income = require('../models/income.model');
 const Expense = require('../models/expense.model');
+const RecurringExpense = require('../models/recurringExpense.model');
 const FinanceCategory = require('../models/financeCategory.model');
 const Invoice = require('../models/invoice.model');
 const SavedInvoiceContent = require('../models/savedInvoiceContent.model');
@@ -814,6 +815,544 @@ const deleteExpense = async (req, res, next) => {
   }
 };
 
+const normalizeRecurringRecipient = (body) => {
+  if (!body.recipient || typeof body.recipient !== 'object') {
+    return undefined;
+  }
+  return {
+    name: body.recipient.name != null ? String(body.recipient.name).trim() : undefined,
+    phone: body.recipient.phone != null ? String(body.recipient.phone).trim() : undefined,
+    email: body.recipient.email != null ? String(body.recipient.email).trim().toLowerCase() : undefined,
+    address: body.recipient.address != null ? String(body.recipient.address).trim() : undefined
+  };
+};
+
+const buildRecurringExpensePayload = (req, { isCreate }) => {
+  const b = req.body;
+  const has = (k) => Object.prototype.hasOwnProperty.call(b, k);
+  const data = {};
+
+  const set = (key, value) => {
+    if (isCreate) {
+      if (value !== undefined) data[key] = value;
+    } else if (has(key)) {
+      data[key] = value;
+    }
+  };
+
+  set('title', b.title);
+  set('amount', b.amount != null ? Number(b.amount) : undefined);
+  set('category', b.category);
+  set('account', b.account);
+  set('vendor', b.vendor != null ? String(b.vendor).trim() : undefined);
+  set('referenceNumber', b.referenceNumber != null ? String(b.referenceNumber).trim() : undefined);
+  set('notes', b.notes != null ? String(b.notes).trim() : undefined);
+  set('frequency', b.frequency);
+  set('interval', b.interval != null ? Number(b.interval) : undefined);
+  set('startDate', b.startDate ? new Date(b.startDate) : undefined);
+  set('endDate', b.endDate ? new Date(b.endDate) : undefined);
+  set('nextDueDate', b.nextDueDate ? new Date(b.nextDueDate) : undefined);
+  set('isActive', b.isActive);
+
+  if (isCreate) {
+    data.college = b.college || req.user.college;
+  } else if (has('college')) {
+    data.college = b.college;
+  }
+
+  if (isCreate) {
+    if (Array.isArray(b.files)) {
+      data.files = b.files.filter((p) => typeof p === 'string' && p.trim());
+    } else {
+      data.files = [];
+    }
+  } else if (has('files') && Array.isArray(b.files)) {
+    data.files = b.files.filter((p) => typeof p === 'string' && p.trim());
+  }
+
+  if (isCreate || has('recipient')) {
+    const rec = normalizeRecurringRecipient(b);
+    if (rec) {
+      data.recipient = rec;
+    } else if (has('recipient') && (b.recipient === null || (typeof b.recipient === 'object' && !Object.keys(b.recipient || {}).length))) {
+      data.recipient = undefined;
+    }
+  }
+
+  if (isCreate) {
+    data.createdBy = req.user._id;
+  }
+
+  return data;
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const getRecurringAnalytics = (recurringDoc, now = new Date()) => {
+  const due = recurringDoc?.nextDueDate ? new Date(recurringDoc.nextDueDate) : null;
+  const isActive = recurringDoc?.isActive !== false;
+  const isOverdue = Boolean(
+    isActive &&
+      due &&
+      !Number.isNaN(due.getTime()) &&
+      due.getTime() < now.getTime()
+  );
+
+  let overdueDays = 0;
+  if (isOverdue) {
+    overdueDays = Math.max(1, Math.floor((now.getTime() - due.getTime()) / DAY_MS));
+  }
+
+  let missedPayments = 0;
+  if (isOverdue && recurringDoc?.frequency) {
+    const interval = Math.max(1, Number(recurringDoc.interval) || 1);
+    if (recurringDoc.frequency === 'daily') {
+      missedPayments = Math.max(1, Math.floor(overdueDays / interval));
+    } else if (recurringDoc.frequency === 'weekly') {
+      missedPayments = Math.max(1, Math.floor(overdueDays / (interval * 7)));
+    } else if (recurringDoc.frequency === 'monthly') {
+      const monthsDiff =
+        (now.getFullYear() - due.getFullYear()) * 12 + (now.getMonth() - due.getMonth());
+      missedPayments = Math.max(1, Math.floor(monthsDiff / interval));
+    } else if (recurringDoc.frequency === 'yearly') {
+      const yearsDiff = now.getFullYear() - due.getFullYear();
+      missedPayments = Math.max(1, Math.floor(yearsDiff / interval));
+    }
+  }
+
+  return {
+    isOverdue,
+    overdueDays,
+    missedPayments,
+    currentStatus: isActive ? (isOverdue ? 'overdue' : 'active') : 'paused'
+  };
+};
+
+const toRecurringWithAnalytics = (doc) => {
+  const raw = doc?.toObject ? doc.toObject() : doc;
+  if (!raw) return raw;
+  return {
+    ...raw,
+    ...getRecurringAnalytics(raw)
+  };
+};
+
+// RECURRING EXPENSE CRUD
+const getRecurringExpenses = async (req, res, next) => {
+  try {
+    const filters = {};
+    const query = req.query;
+
+    if (req.user.college) {
+      filters.college = req.user.college;
+    }
+    if (query.categoryId) {
+      filters.category = query.categoryId;
+    }
+    if (query.accountId) {
+      filters.account = query.accountId;
+    }
+    if (query.isActive !== undefined) {
+      filters.isActive = query.isActive === 'true';
+    }
+    if (query.startDate || query.endDate) {
+      filters.nextDueDate = {};
+      if (query.startDate) {
+        filters.nextDueDate.$gte = new Date(query.startDate);
+      }
+      if (query.endDate) {
+        filters.nextDueDate.$lte = new Date(query.endDate);
+      }
+    }
+
+    const page = parseInt(query.page, 10) || 1;
+    const limit = parseInt(query.limit, 10) || 20;
+    const skip = (page - 1) * limit;
+
+    const sortBy = query.sortBy || 'nextDueDate';
+    const sortOrder = query.sortOrder === 'asc' ? 1 : -1;
+    const sort = { [sortBy]: sortOrder };
+
+    const list = await RecurringExpense.find(filters)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email')
+      .sort(sort)
+      .skip(skip)
+      .limit(limit);
+
+    const total = await RecurringExpense.countDocuments(filters);
+
+    res.json({
+      success: true,
+      data: list.map((item) => toRecurringWithAnalytics(item)),
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getRecurringExpenseById = async (req, res, next) => {
+  try {
+    const doc = await RecurringExpense.findById(req.params.id)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    if (!doc) {
+      return res.status(404).json({ success: false, message: 'Recurring expense not found' });
+    }
+
+    res.json({ success: true, data: toRecurringWithAnalytics(doc) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const createRecurringExpense = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const category = await FinanceCategory.findById(req.body.category);
+    if (!category || (category.type !== 'expense' && category.type !== 'both')) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Invalid category for recurring expense' });
+    }
+
+    const data = buildRecurringExpensePayload(req, { isCreate: true });
+    if (data.interval == null || Number.isNaN(data.interval) || data.interval < 1) {
+      data.interval = 1;
+    }
+
+    const doc = await RecurringExpense.create(data);
+    const populated = await RecurringExpense.findById(doc._id)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.status(201).json({ success: true, data: populated });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateRecurringExpense = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const doc = await RecurringExpense.findById(req.params.id);
+    if (!doc) {
+      return res.status(404).json({ success: false, message: 'Recurring expense not found' });
+    }
+
+    if (req.body.category) {
+      const category = await FinanceCategory.findById(req.body.category);
+      if (!category || (category.type !== 'expense' && category.type !== 'both')) {
+        return res
+          .status(400)
+          .json({ success: false, message: 'Invalid category for recurring expense' });
+      }
+    }
+
+    if (req.body.account) {
+      const account = await Account.findById(req.body.account);
+      if (!account) {
+        return res.status(404).json({ success: false, message: 'Account not found' });
+      }
+    }
+
+    const patch = buildRecurringExpensePayload(req, { isCreate: false });
+    const updatableKeys = [
+      'title',
+      'amount',
+      'category',
+      'account',
+      'vendor',
+      'college',
+      'referenceNumber',
+      'notes',
+      'files',
+      'frequency',
+      'interval',
+      'startDate',
+      'endDate',
+      'nextDueDate',
+      'isActive',
+      'recipient'
+    ];
+
+    updatableKeys.forEach((key) => {
+      if (patch[key] !== undefined) {
+        doc[key] = patch[key];
+      }
+    });
+
+    if (doc.interval == null || Number.isNaN(doc.interval) || doc.interval < 1) {
+      doc.interval = 1;
+    }
+
+    doc.updatedBy = req.user._id;
+    await doc.save();
+
+    const updated = await RecurringExpense.findById(doc._id)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const deleteRecurringExpense = async (req, res, next) => {
+  try {
+    const doc = await RecurringExpense.findByIdAndDelete(req.params.id);
+    if (!doc) {
+      return res.status(404).json({ success: false, message: 'Recurring expense not found' });
+    }
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getRecurringExpensePaymentHistory = async (req, res, next) => {
+  try {
+    const recurring = await RecurringExpense.findById(req.params.id);
+    if (!recurring) {
+      return res.status(404).json({ success: false, message: 'Recurring expense not found' });
+    }
+    if (recurring.college && req.user.college && recurring.college.toString() !== req.user.college.toString()) {
+      return res.status(403).json({ success: false, message: 'Not allowed' });
+    }
+
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 20;
+    const skip = (page - 1) * limit;
+
+    const filters = {
+      recurringExpense: recurring._id
+    };
+    if (req.user.college) {
+      filters.college = req.user.college;
+    }
+
+    const history = await Expense.find(filters)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email')
+      .sort({ date: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Expense.countDocuments(filters);
+
+    res.json({
+      success: true,
+      data: history,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const recurringPaymentStatuses = ['pending', 'completed', 'failed', 'cancelled', 'refunded'];
+
+const addMonthsWithClamp = (date, monthsToAdd) => {
+  const y = date.getFullYear();
+  const m = date.getMonth();
+  const day = date.getDate();
+  const targetMonthIndex = m + monthsToAdd;
+  const targetYear = y + Math.floor(targetMonthIndex / 12);
+  const targetMonth = ((targetMonthIndex % 12) + 12) % 12;
+  const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate();
+  return new Date(
+    targetYear,
+    targetMonth,
+    Math.min(day, lastDay),
+    date.getHours(),
+    date.getMinutes(),
+    date.getSeconds(),
+    date.getMilliseconds()
+  );
+};
+
+const computeNextRecurringDueDate = (recurring, fromDate) => {
+  const interval = Number(recurring.interval) || 1;
+  const d = new Date(fromDate);
+  if (Number.isNaN(d.getTime())) return new Date();
+
+  if (recurring.frequency === 'daily') {
+    d.setDate(d.getDate() + interval);
+  } else if (recurring.frequency === 'weekly') {
+    d.setDate(d.getDate() + interval * 7);
+  } else if (recurring.frequency === 'monthly') {
+    return addMonthsWithClamp(d, interval);
+  } else if (recurring.frequency === 'yearly') {
+    return addMonthsWithClamp(d, interval * 12);
+  } else {
+    // Fallback to daily
+    d.setDate(d.getDate() + interval);
+  }
+
+  return d;
+};
+
+// Pay a recurring expense schedule by creating a one-off Expense document.
+// Expense schema hooks will update Account balances and Ledger automatically.
+const payRecurringPayment = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const { recurringExpenseId, paymentBy, paymentDate, paymentStatus, account: overrideAccount } = req.body;
+
+    if (!recurringExpenseId) {
+      return res.status(400).json({ success: false, message: 'recurringExpenseId is required' });
+    }
+
+    const status = paymentStatus || 'completed';
+    if (!recurringPaymentStatuses.includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid paymentStatus' });
+    }
+
+    const payDate = paymentDate ? new Date(paymentDate) : new Date();
+    if (Number.isNaN(payDate.getTime())) {
+      return res.status(400).json({ success: false, message: 'Invalid paymentDate' });
+    }
+
+    const recurring = await RecurringExpense.findById(recurringExpenseId);
+    if (!recurring) {
+      return res.status(404).json({ success: false, message: 'Recurring expense not found' });
+    }
+
+    // Scope enforcement for multi-college setups
+    if (recurring.college && req.user.college && recurring.college.toString() !== req.user.college.toString()) {
+      return res.status(403).json({ success: false, message: 'Not allowed' });
+    }
+
+    let createdExpense = null;
+    const paymentAccountId = overrideAccount || recurring.account;
+
+    if (!paymentAccountId) {
+      return res.status(400).json({ success: false, message: 'Account is required' });
+    }
+
+    const accountDoc = await Account.findById(paymentAccountId);
+    if (!accountDoc) {
+      return res.status(404).json({ success: false, message: 'Account not found' });
+    }
+    if (
+      recurring.college &&
+      accountDoc.college &&
+      recurring.college.toString() !== accountDoc.college.toString()
+    ) {
+      return res.status(400).json({ success: false, message: 'Account does not belong to the same college' });
+    }
+
+    if (status === 'completed') {
+      if (!recurring.isActive) {
+        return res.status(400).json({ success: false, message: 'Recurring expense is not active' });
+      }
+
+      const baseNotes = [];
+      if (recurring.notes) baseNotes.push(recurring.notes);
+      if (paymentBy && String(paymentBy).trim()) baseNotes.push(`Paid by: ${String(paymentBy).trim()}`);
+
+      const recipient =
+        recurring.recipient && typeof recurring.recipient === 'object'
+          ? recurring.recipient
+          : undefined;
+      const hasRecipient =
+        recipient && (recipient.name || recipient.phone || recipient.email || recipient.address);
+
+      const expensePayload = {
+        title: recurring.title,
+        amount: recurring.amount,
+        date: payDate,
+        category: recurring.category,
+        account: paymentAccountId,
+        recurringExpense: recurring._id,
+        vendor: recurring.vendor,
+        ...(hasRecipient ? { recipient } : {}),
+        college: recurring.college || req.user.college,
+        referenceNumber: recurring.referenceNumber,
+        notes: baseNotes.length ? baseNotes.join(' | ') : undefined,
+        files: Array.isArray(recurring.files) ? recurring.files : [],
+        createdBy: req.user._id
+      };
+
+      createdExpense = await Expense.create(expensePayload);
+    }
+
+    // Update recurring schedule status / next due date
+    const next = {};
+    if (status === 'completed') {
+      next.paymentCount = (recurring.paymentCount || 0) + 1;
+      const baseDueDate =
+        recurring.nextDueDate && !Number.isNaN(new Date(recurring.nextDueDate).getTime())
+          ? recurring.nextDueDate
+          : payDate;
+      next.nextDueDate = computeNextRecurringDueDate(recurring, baseDueDate);
+      next.isActive = recurring.endDate ? next.nextDueDate <= recurring.endDate : true;
+    } else if (['failed', 'cancelled', 'refunded'].includes(status)) {
+      next.isActive = false;
+    }
+
+    if (paymentBy && String(paymentBy).trim()) next.lastPaymentBy = String(paymentBy).trim();
+    next.lastPaymentDate = payDate;
+    next.lastPaymentStatus = status;
+    next.updatedBy = req.user._id;
+
+    await RecurringExpense.findByIdAndUpdate(recurringExpenseId, { $set: next }, { new: false });
+
+    const updatedRecurring = await RecurringExpense.findById(recurringExpenseId)
+      .populate('category', 'name type')
+      .populate('account', 'name accountType')
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.json({
+      success: true,
+      data: {
+        recurring: toRecurringWithAnalytics(updatedRecurring),
+        expense: createdExpense ? await Expense.findById(createdExpense._id)
+          .populate('category', 'name type')
+          .populate('account', 'name accountType')
+          .populate('college', 'name code')
+          .populate('createdBy', 'name email')
+          .populate('updatedBy', 'name email') : null
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // SUMMARY
 const getFinanceSummary = async (req, res, next) => {
   try {
@@ -1524,7 +2063,7 @@ const payInvoiceItems = async (req, res, next) => {
       });
       await Ledger.applyToAccounts(paymentLedger);
       await Income.create({
-        title: `Payment: ${payment.paymentNumber}`,
+        title: `Receipt: ${payment.paymentNumber}`,
         amount: payment.amount,
         date: payment.paymentDate,
         category: paymentsCategory._id,
@@ -2745,7 +3284,7 @@ const createPayment = async (req, res, next) => {
 
       // Record payment as income in Finance (Payments category) for tracking and reports
       await Income.create({
-        title: `Payment: ${payment.paymentNumber}`,
+        title: `Receipt: ${payment.paymentNumber}`,
         amount: payment.amount,
         date: payment.paymentDate,
         category: paymentsCategory._id,
@@ -2889,7 +3428,7 @@ const updatePayment = async (req, res, next) => {
       });
       await Ledger.applyToAccounts(paymentLedger);
       await Income.create({
-        title: `Payment: ${payment.paymentNumber}`,
+        title: `Receipt: ${payment.paymentNumber}`,
         amount: payment.amount,
         date: payment.paymentDate,
         category: paymentsCategory._id,
@@ -3056,6 +3595,14 @@ module.exports = {
   createExpense,
   updateExpense,
   deleteExpense,
+  // recurring expense
+  getRecurringExpenses,
+  getRecurringExpenseById,
+  createRecurringExpense,
+  updateRecurringExpense,
+  deleteRecurringExpense,
+  getRecurringExpensePaymentHistory,
+  payRecurringPayment,
   // summary
   getFinanceSummary,
   // invoice

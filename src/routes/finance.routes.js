@@ -21,6 +21,14 @@ const {
   createExpense,
   updateExpense,
   deleteExpense,
+  // recurring expense
+  getRecurringExpenses,
+  getRecurringExpenseById,
+  createRecurringExpense,
+  updateRecurringExpense,
+  deleteRecurringExpense,
+  getRecurringExpensePaymentHistory,
+  payRecurringPayment,
   // summary
   getFinanceSummary,
   // invoice
@@ -80,6 +88,7 @@ const accountTypes = [
   'other'
 ];
 const accountStatuses = ['active', 'inactive', 'closed'];
+const recurringFrequencies = ['daily', 'weekly', 'monthly', 'yearly'];
 const transactionTypes = ['debit', 'credit'];
 const entryTypes = ['income', 'expense', 'transfer', 'payment', 'invoice', 'adjustment', 'opening'];
 const paymentStatuses = ['pending', 'completed', 'failed', 'cancelled', 'refunded'];
@@ -396,6 +405,186 @@ const expenseUpdateValidators = [
     .withMessage('isCancelled must be a boolean')
 ];
 
+const recurringExpenseCreateValidators = [
+  body('title')
+    .isLength({ min: 2 })
+    .withMessage('Title must be at least 2 characters long')
+    .trim(),
+  body('amount')
+    .isFloat({ min: 0 })
+    .withMessage('Amount must be a positive number'),
+  body('category')
+    .isMongoId()
+    .withMessage('Category must be a valid Mongo ID'),
+  body('frequency')
+    .isIn(recurringFrequencies)
+    .withMessage('frequency must be daily, weekly, monthly, or yearly'),
+  body('interval')
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage('interval must be a positive integer'),
+  body('startDate')
+    .isISO8601()
+    .withMessage('startDate must be a valid ISO date'),
+  body('endDate')
+    .optional()
+    .isISO8601()
+    .withMessage('endDate must be a valid ISO date'),
+  body('nextDueDate')
+    .isISO8601()
+    .withMessage('nextDueDate must be a valid ISO date'),
+  body('vendor')
+    .optional()
+    .trim(),
+  body('recipient')
+    .optional()
+    .isObject()
+    .withMessage('recipient must be an object'),
+  body('recipient.name')
+    .optional()
+    .trim(),
+  body('recipient.phone')
+    .optional()
+    .trim(),
+  body('recipient.email')
+    .optional()
+    .trim()
+    .isEmail()
+    .withMessage('recipient email must be valid'),
+  body('recipient.address')
+    .optional()
+    .trim(),
+  body('college')
+    .optional()
+    .isMongoId()
+    .withMessage('College must be a valid Mongo ID'),
+  body('referenceNumber')
+    .optional()
+    .trim(),
+  body('notes')
+    .optional()
+    .trim(),
+  body('files')
+    .optional()
+    .isArray()
+    .withMessage('files must be an array of path strings'),
+  body('files.*')
+    .optional()
+    .trim()
+    .isString()
+    .withMessage('Each file must be a path string'),
+  body('isActive')
+    .optional()
+    .isBoolean()
+    .withMessage('isActive must be a boolean')
+];
+
+const recurringExpenseUpdateValidators = [
+  body('title')
+    .optional()
+    .isLength({ min: 2 })
+    .withMessage('Title must be at least 2 characters long')
+    .trim(),
+  body('amount')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('Amount must be a positive number'),
+  body('category')
+    .optional()
+    .isMongoId()
+    .withMessage('Category must be a valid Mongo ID'),
+  body('account')
+    .optional()
+    .isMongoId()
+    .withMessage('Account must be a valid Mongo ID'),
+  body('frequency')
+    .optional()
+    .isIn(recurringFrequencies)
+    .withMessage('frequency must be daily, weekly, monthly, or yearly'),
+  body('interval')
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage('interval must be a positive integer'),
+  body('startDate')
+    .optional()
+    .isISO8601()
+    .withMessage('startDate must be a valid ISO date'),
+  body('endDate')
+    .optional()
+    .isISO8601()
+    .withMessage('endDate must be a valid ISO date'),
+  body('nextDueDate')
+    .optional()
+    .isISO8601()
+    .withMessage('nextDueDate must be a valid ISO date'),
+  body('vendor')
+    .optional()
+    .trim(),
+  body('recipient')
+    .optional()
+    .isObject()
+    .withMessage('recipient must be an object'),
+  body('recipient.name')
+    .optional()
+    .trim(),
+  body('recipient.phone')
+    .optional()
+    .trim(),
+  body('recipient.email')
+    .optional()
+    .trim()
+    .isEmail()
+    .withMessage('recipient email must be valid'),
+  body('recipient.address')
+    .optional()
+    .trim(),
+  body('college')
+    .optional()
+    .isMongoId()
+    .withMessage('College must be a valid Mongo ID'),
+  body('referenceNumber')
+    .optional()
+    .trim(),
+  body('notes')
+    .optional()
+    .trim(),
+  body('files')
+    .optional()
+    .isArray()
+    .withMessage('files must be an array of path strings'),
+  body('files.*')
+    .optional()
+    .trim()
+    .isString()
+    .withMessage('Each file must be a path string'),
+  body('isActive')
+    .optional()
+    .isBoolean()
+    .withMessage('isActive must be a boolean')
+];
+
+// PAY recurring expense (create Expense + advance schedule)
+const payRecurringPaymentValidators = [
+  body('recurringExpenseId')
+    .isMongoId()
+    .withMessage('recurringExpenseId must be a valid Mongo ID'),
+  body('account')
+    .optional()
+    .isMongoId()
+    .withMessage('account must be a valid Mongo ID'),
+  body('paymentBy')
+    .optional()
+    .trim(),
+  body('paymentDate')
+    .optional()
+    .isISO8601()
+    .withMessage('paymentDate must be a valid ISO date'),
+  body('paymentStatus')
+    .optional()
+    .isIn(paymentStatuses)
+    .withMessage('paymentStatus must be one of pending, completed, failed, cancelled, refunded')
+];
+
 // CATEGORY routes
 router.get('/categories', requirePermission('finance', 'view'), getCategories);
 router.get('/categories/:id', requirePermission('finance', 'view'), getCategoryById);
@@ -461,6 +650,44 @@ router.delete(
   '/expenses/:id',
   requirePermission('finance', 'edit'),
   deleteExpense
+);
+
+// RECURRING EXPENSE routes
+router.get('/recurring-expenses', requirePermission('finance', 'view'), getRecurringExpenses);
+router.get(
+  '/recurring-expenses/:id',
+  requirePermission('finance', 'view'),
+  getRecurringExpenseById
+);
+router.get(
+  '/recurring-expenses/:id/payment-history',
+  requirePermission('finance', 'view'),
+  getRecurringExpensePaymentHistory
+);
+router.post(
+  '/recurring-expenses',
+  requirePermission('finance', 'edit'),
+  recurringExpenseCreateValidators,
+  createRecurringExpense
+);
+router.put(
+  '/recurring-expenses/:id',
+  requirePermission('finance', 'edit'),
+  recurringExpenseUpdateValidators,
+  updateRecurringExpense
+);
+router.delete(
+  '/recurring-expenses/:id',
+  requirePermission('finance', 'edit'),
+  deleteRecurringExpense
+);
+
+// Pay a recurring expense schedule
+router.post(
+  '/pay-recurring-payment',
+  requirePermission('finance', 'edit'),
+  payRecurringPaymentValidators,
+  payRecurringPayment
 );
 
 // SUMMARY
