@@ -237,14 +237,14 @@ const assertPaymentAccountsValid = async (body, collegeId) => {
 const getOrCreatePaymentsCategory = async (collegeId, userId) => {
   let category = await FinanceCategory.findOne({
     college: collegeId,
-    name: /^Payments$/i,
+    name: /^Receipts$/i,
     $or: [{ type: 'income' }, { type: 'both' }]
   });
   if (!category) {
     category = await FinanceCategory.create({
-      name: 'Payments',
+      name: 'Receipts',
       type: 'income',
-      description: 'Income from payments',
+      description: 'Income from receipts',
       college: collegeId,
       createdBy: userId
     });
