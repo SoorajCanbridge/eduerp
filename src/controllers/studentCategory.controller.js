@@ -1,0 +1,160 @@
+const { validationResult } = require('express-validator');
+const StudentCategory = require('../models/studentCategory.model');
+const Student = require('../models/student.model');
+
+const handleValidation = (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    res.status(422).json({ success: false, errors: errors.array() });
+    return true;
+  }
+  return false;
+};
+
+/** @returns {import('mongoose').Types.ObjectId|null} null if response was sent */
+const getUserCollegeOrRespond = (req, res) => {
+  if (!req.user.college) {
+    res.status(403).json({
+      success: false,
+      message: 'College context is required to access student categories'
+    });
+    return null;
+  }
+  return req.user.college;
+};
+
+const getAllStudentCategories = async (req, res, next) => {
+  try {
+    const college = getUserCollegeOrRespond(req, res);
+    if (!college) return;
+
+    const categories = await StudentCategory.find({ college })
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email')
+      .sort({ name: 1 });
+
+    res.json({ success: true, data: categories });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getStudentCategoryById = async (req, res, next) => {
+  try {
+    const college = getUserCollegeOrRespond(req, res);
+    if (!college) return;
+
+    const category = await StudentCategory.findOne({ _id: req.params.id, college })
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    if (!category) {
+      return res.status(404).json({ success: false, message: 'Student category not found' });
+    }
+
+    res.json({ success: true, data: category });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const createStudentCategory = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const college = getUserCollegeOrRespond(req, res);
+    if (!college) return;
+
+    const category = await StudentCategory.create({
+      name: req.body.name,
+      description: req.body.description,
+      college,
+      createdBy: req.user._id
+    });
+
+    const populated = await StudentCategory.findById(category._id)
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.status(201).json({ success: true, data: populated });
+  } catch (error) {
+    if (error.code === 11000) {
+      res.status(409).json({
+        success: false,
+        message: 'A student category with this name already exists for this college'
+      });
+    } else {
+      next(error);
+    }
+  }
+};
+
+const updateStudentCategory = async (req, res, next) => {
+  if (handleValidation(req, res)) return;
+
+  try {
+    const college = getUserCollegeOrRespond(req, res);
+    if (!college) return;
+
+    const category = await StudentCategory.findOne({ _id: req.params.id, college });
+    if (!category) {
+      return res.status(404).json({ success: false, message: 'Student category not found' });
+    }
+
+    if (req.body.name !== undefined) category.name = req.body.name;
+    if (req.body.description !== undefined) category.description = req.body.description;
+
+    category.updatedBy = req.user._id;
+    await category.save();
+
+    const updated = await StudentCategory.findById(category._id)
+      .populate('college', 'name code')
+      .populate('createdBy', 'name email')
+      .populate('updatedBy', 'name email');
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    if (error.code === 11000) {
+      res.status(409).json({
+        success: false,
+        message: 'A student category with this name already exists for this college'
+      });
+    } else {
+      next(error);
+    }
+  }
+};
+
+const deleteStudentCategory = async (req, res, next) => {
+  try {
+    const college = getUserCollegeOrRespond(req, res);
+    if (!college) return;
+
+    const inUse = await Student.exists({ category: req.params.id, college });
+    if (inUse) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete category while it is assigned to one or more students'
+      });
+    }
+
+    const category = await StudentCategory.findOneAndDelete({ _id: req.params.id, college });
+    if (!category) {
+      return res.status(404).json({ success: false, message: 'Student category not found' });
+    }
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = {
+  getAllStudentCategories,
+  getStudentCategoryById,
+  createStudentCategory,
+  updateStudentCategory,
+  deleteStudentCategory
+};

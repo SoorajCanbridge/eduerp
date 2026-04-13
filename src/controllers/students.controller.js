@@ -1,5 +1,7 @@
 const { validationResult } = require('express-validator');
 const Student = require('../models/student.model');
+const StudentCategory = require('../models/studentCategory.model');
+const StudentTag = require('../models/studentTag.model');
 const AcademicCourse = require('../models/academicCourse.model');
 const College = require('../models/college.model');
 const analyticsService = require('../services/analytics.service');
@@ -11,6 +13,42 @@ const handleValidation = (req, res) => {
     return true;
   }
   return false;
+};
+
+/** Supports `categoryId` / `category` on create/update. */
+const resolveRefFromBody = (body, idKey, schemaKey) => {
+  if (body[idKey] !== undefined) return body[idKey];
+  if (body[schemaKey] !== undefined) return body[schemaKey];
+  return undefined;
+};
+
+/**
+ * Tags: prefer `tags` or `tagIds` (arrays). Legacy single `tagId` / `tag` still supported.
+ * @returns {{ mode: 'omit' } | { mode: 'set', ids: string[] } | { mode: 'error', message: string }}
+ */
+const getTagsPayloadFromBody = (body) => {
+  if (body.tags !== undefined || body.tagIds !== undefined) {
+    const raw = body.tags !== undefined ? body.tags : body.tagIds;
+    if (raw === null) return { mode: 'set', ids: [] };
+    if (!Array.isArray(raw)) {
+      return { mode: 'error', message: 'tags must be an array' };
+    }
+    const ids = [...new Set(raw.filter((id) => id != null && id !== ''))];
+    return { mode: 'set', ids };
+  }
+  const single = resolveRefFromBody(body, 'tagId', 'tag');
+  if (single === undefined) return { mode: 'omit' };
+  if (single === null || single === '') return { mode: 'set', ids: [] };
+  return { mode: 'set', ids: [single] };
+};
+
+const validateStudentTagsForCollege = async (tagIds, collegeId) => {
+  if (!tagIds.length) return true;
+  const count = await StudentTag.countDocuments({
+    _id: { $in: tagIds },
+    college: collegeId
+  });
+  return count === tagIds.length;
 };
 
 const getAllStudents = async (req, res, next) => {
@@ -124,6 +162,8 @@ const getAllStudents = async (req, res, next) => {
     const students = await Student.find(filters)
       .populate('college', 'name code')
       .populate('course', 'name batch levelA levelB levelC')
+      .populate('category', 'name description college')
+      .populate('tags', 'name description color college')
       .populate('createdBy', 'name email')
       .populate('updatedBy', 'name email')
       .sort(sort)
@@ -152,6 +192,8 @@ const getStudentById = async (req, res, next) => {
     const student = await Student.findById(req.params.id)
       .populate('college', 'name code address city state')
       .populate('course', 'name batch levelA levelB levelC startDate endDate')
+      .populate('category', 'name description college')
+      .populate('tags', 'name description color college')
       .populate('createdBy', 'name email')
       .populate('updatedBy', 'name email');
 
@@ -192,6 +234,35 @@ const createStudent = async (req, res, next) => {
       });
     }
 
+    const categoryRef = resolveRefFromBody(req.body, 'categoryId', 'category');
+    const collegeForRefs = req.body.college || req.user.college;
+
+    if (categoryRef !== undefined && categoryRef !== null && categoryRef !== '') {
+      const cat = await StudentCategory.findOne({
+        _id: categoryRef,
+        college: collegeForRefs
+      });
+      if (!cat) {
+        return res
+          .status(404)
+          .json({ success: false, message: 'Student category not found' });
+      }
+    }
+
+    const tagPayload = getTagsPayloadFromBody(req.body);
+    if (tagPayload.mode === 'error') {
+      return res.status(400).json({ success: false, message: tagPayload.message });
+    }
+    if (tagPayload.mode === 'set') {
+      const tagsOk = await validateStudentTagsForCollege(tagPayload.ids, collegeForRefs);
+      if (!tagsOk) {
+        return res.status(404).json({
+          success: false,
+          message: 'One or more student tags were not found'
+        });
+      }
+    }
+
     // Generate studentId if not provided
     let studentId = req.body.studentId;
     if (!studentId) {
@@ -215,6 +286,20 @@ const createStudent = async (req, res, next) => {
       createdBy: req.user._id
     };
 
+    if (categoryRef !== undefined && categoryRef !== null && categoryRef !== '') {
+      studentData.category = categoryRef;
+    } else {
+      delete studentData.category;
+    }
+    delete studentData.tags;
+    delete studentData.tagIds;
+    delete studentData.categoryId;
+    delete studentData.tagId;
+    delete studentData.tag;
+    if (tagPayload.mode === 'set') {
+      studentData.tags = tagPayload.ids;
+    }
+
     const student = await Student.create(studentData);
 
     await analyticsService.recordAnalytics(student.college, student.enrollmentDate || student.createdAt, {
@@ -231,6 +316,8 @@ const createStudent = async (req, res, next) => {
     const populatedStudent = await Student.findById(student._id)
       .populate('college', 'name code')
       .populate('course', 'name batch levelA levelB levelC')
+      .populate('category', 'name description college')
+      .populate('tags', 'name description color college')
       .populate('createdBy', 'name email');
 
     res.status(201).json({ success: true, data: populatedStudent });
@@ -261,6 +348,7 @@ const updateStudent = async (req, res, next) => {
     // Update fields
     const updatableFields = [
       'name',
+      'studentId',
       'email',
       'phone',
       'alternatePhone',
@@ -328,10 +416,45 @@ const updateStudent = async (req, res, next) => {
       }
     }
 
+    const categoryRef = resolveRefFromBody(req.body, 'categoryId', 'category');
+    if (categoryRef !== undefined) {
+      if (categoryRef === null || categoryRef === '') {
+        student.category = null;
+      } else {
+        const cat = await StudentCategory.findOne({
+          _id: categoryRef,
+          college: student.college
+        });
+        if (!cat) {
+          return res
+            .status(404)
+            .json({ success: false, message: 'Student category not found' });
+        }
+        student.category = categoryRef;
+      }
+    }
+
+    const tagPayload = getTagsPayloadFromBody(req.body);
+    if (tagPayload.mode === 'error') {
+      return res.status(400).json({ success: false, message: tagPayload.message });
+    }
+    if (tagPayload.mode === 'set') {
+      const tagsOk = await validateStudentTagsForCollege(tagPayload.ids, student.college);
+      if (!tagsOk) {
+        return res.status(404).json({
+          success: false,
+          message: 'One or more student tags were not found'
+        });
+      }
+      student.tags = tagPayload.ids;
+    }
+
     await student.save();
     const updatedStudent = await Student.findById(student._id)
       .populate('college', 'name code')
       .populate('course', 'name batch levelA levelB levelC')
+      .populate('category', 'name description college')
+      .populate('tags', 'name description color college')
       .populate('createdBy', 'name email')
       .populate('updatedBy', 'name email');
 
@@ -379,9 +502,129 @@ const getStudentsByCourse = async (req, res, next) => {
     const students = await Student.find(filters)
       .populate('college', 'name code')
       .populate('course', 'name batch')
+      .populate('category', 'name description college')
+      .populate('tags', 'name description color college')
       .sort({ createdAt: -1 });
 
     res.json({ success: true, data: students, count: students.length });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getStudentsByCategory = async (req, res, next) => {
+  try {
+    if (!req.user.college) {
+      return res.status(403).json({
+        success: false,
+        message: 'College context is required to list students by category'
+      });
+    }
+
+    const categoryId = req.params.categoryId;
+    const category = await StudentCategory.findOne({
+      _id: categoryId,
+      college: req.user.college
+    });
+    if (!category) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'Student category not found' });
+    }
+
+    const filters = { category: categoryId, college: req.user.college };
+
+    if (req.query.enrollmentStatus) {
+      filters.enrollmentStatus = req.query.enrollmentStatus;
+    }
+
+    if (req.query.isActive !== undefined) {
+      filters.isActive = req.query.isActive === 'true';
+    }
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const students = await Student.find(filters)
+      .populate('college', 'name code')
+      .populate('course', 'name batch levelA levelB levelC')
+      .populate('category', 'name description college')
+      .populate('tags', 'name description color college')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Student.countDocuments(filters);
+
+    res.json({
+      success: true,
+      data: students,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getStudentsByTag = async (req, res, next) => {
+  try {
+    if (!req.user.college) {
+      return res.status(403).json({
+        success: false,
+        message: 'College context is required to list students by tag'
+      });
+    }
+
+    const tagId = req.params.tagId;
+    const tag = await StudentTag.findOne({
+      _id: tagId,
+      college: req.user.college
+    });
+    if (!tag) {
+      return res.status(404).json({ success: false, message: 'Student tag not found' });
+    }
+
+    const filters = { tags: tagId, college: req.user.college };
+
+    if (req.query.enrollmentStatus) {
+      filters.enrollmentStatus = req.query.enrollmentStatus;
+    }
+
+    if (req.query.isActive !== undefined) {
+      filters.isActive = req.query.isActive === 'true';
+    }
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const students = await Student.find(filters)
+      .populate('college', 'name code')
+      .populate('course', 'name batch levelA levelB levelC')
+      .populate('category', 'name description college')
+      .populate('tags', 'name description color college')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Student.countDocuments(filters);
+
+    res.json({
+      success: true,
+      data: students,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
   } catch (error) {
     next(error);
   }
@@ -411,6 +654,8 @@ const getStudentsByCollege = async (req, res, next) => {
     const students = await Student.find(filters)
       .populate('college', 'name code')
       .populate('course', 'name batch levelA levelB levelC')
+      .populate('category', 'name description college')
+      .populate('tags', 'name description color college')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
@@ -593,6 +838,8 @@ module.exports = {
   updateStudent,
   deleteStudent,
   getStudentsByCourse,
+  getStudentsByCategory,
+  getStudentsByTag,
   getStudentsByCollege,
   getStudentStats,
   bulkUpdateActiveStatus

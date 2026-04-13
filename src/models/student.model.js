@@ -88,6 +88,19 @@ const studentSchema = new mongoose.Schema(
       ref: 'AcademicCourse',
       required: true
     },
+    category: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'StudentCategory'
+    },
+    tags: {
+      type: [
+        {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'StudentTag'
+        }
+      ],
+      default: []
+    },
     enrollmentDate: {
       type: Date,
       required: true,
@@ -171,6 +184,8 @@ const studentSchema = new mongoose.Schema(
 studentSchema.index({ college: 1, studentId: 1 }, { unique: true });
 studentSchema.index({ college: 1 });
 studentSchema.index({ course: 1 });
+studentSchema.index({ category: 1 });
+studentSchema.index({ tags: 1 });
 studentSchema.index({ enrollmentStatus: 1 });
 studentSchema.index({ phone: 1 });
 

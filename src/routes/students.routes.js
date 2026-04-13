@@ -7,6 +7,8 @@ const {
   updateStudent,
   deleteStudent,
   getStudentsByCourse,
+  getStudentsByCategory,
+  getStudentsByTag,
   getStudentsByCollege,
   getStudentStats,
   bulkUpdateActiveStatus
@@ -66,6 +68,36 @@ const createValidators = [
   body('course')
     .isMongoId()
     .withMessage('Valid course ID is required'),
+  body('categoryId')
+    .optional()
+    .isMongoId()
+    .withMessage('Valid student category ID is required'),
+  body('category')
+    .optional()
+    .isMongoId()
+    .withMessage('Valid student category ID is required'),
+  body('tags')
+    .optional()
+    .isArray()
+    .withMessage('tags must be an array'),
+  body('tags.*')
+    .isMongoId()
+    .withMessage('Each tag must be a valid ID'),
+  body('tagIds')
+    .optional()
+    .isArray()
+    .withMessage('tagIds must be an array'),
+  body('tagIds.*')
+    .isMongoId()
+    .withMessage('Each tag ID must be valid'),
+  body('tagId')
+    .optional()
+    .isMongoId()
+    .withMessage('Valid student tag ID is required'),
+  body('tag')
+    .optional()
+    .isMongoId()
+    .withMessage('Valid student tag ID is required'),
   body('enrollmentDate')
     .optional()
     .isISO8601()
@@ -135,6 +167,11 @@ const updateValidators = [
     .isLength({ min: 2 })
     .withMessage('Name must be at least 2 characters long')
     .trim(),
+  body('studentId')
+    .optional()
+    .trim()
+    .isLength({ min: 3 })
+    .withMessage('Student ID must be at least 3 characters'),
   body('email')
     .optional()
     .isEmail()
@@ -191,6 +228,38 @@ const updateValidators = [
     .optional()
     .isMongoId()
     .withMessage('Valid course ID is required'),
+  body('categoryId')
+    .optional({ nullable: true, checkFalsy: true })
+    .isMongoId()
+    .withMessage('Valid student category ID is required'),
+  body('category')
+    .optional({ nullable: true, checkFalsy: true })
+    .isMongoId()
+    .withMessage('Valid student category ID is required'),
+  body('tags')
+    .optional({ nullable: true })
+    .custom((v) => v === null || Array.isArray(v))
+    .withMessage('tags must be an array'),
+  body('tags.*')
+    .optional({ nullable: true, checkFalsy: true })
+    .isMongoId()
+    .withMessage('Each tag must be a valid ID'),
+  body('tagIds')
+    .optional({ nullable: true })
+    .custom((v) => v === null || Array.isArray(v))
+    .withMessage('tagIds must be an array'),
+  body('tagIds.*')
+    .optional({ nullable: true, checkFalsy: true })
+    .isMongoId()
+    .withMessage('Each tag ID must be valid'),
+  body('tagId')
+    .optional({ nullable: true, checkFalsy: true })
+    .isMongoId()
+    .withMessage('Valid student tag ID is required'),
+  body('tag')
+    .optional({ nullable: true, checkFalsy: true })
+    .isMongoId()
+    .withMessage('Valid student tag ID is required'),
   body('enrollmentDate')
     .optional()
     .isISO8601()
@@ -263,6 +332,8 @@ router.get('/', requirePermission('students', 'view'), getAllStudents);
 router.get('/stats', requirePermission('students', 'view'), getStudentStats);
 router.get('/course/:courseId', requirePermission('students', 'view'), getStudentsByCourse);
 router.get('/college/:collegeId', requirePermission('students', 'view'), getStudentsByCollege);
+router.get('/category/:categoryId', requirePermission('students', 'view'), getStudentsByCategory);
+router.get('/tag/:tagId', requirePermission('students', 'view'), getStudentsByTag);
 router.get('/:id', requirePermission('students', 'view'), getStudentById);
 router.post('/', requirePermission('students', 'edit'), createValidators, createStudent);
 router.put('/:id', requirePermission('students', 'edit'), updateValidators, updateStudent);
