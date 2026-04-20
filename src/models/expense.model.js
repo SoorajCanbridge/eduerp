@@ -92,6 +92,51 @@ expenseSchema.index(
 );
 expenseSchema.index({ college: 1, serialNumber: -1 });
 
+const createExpenseLedger = async ({ doc, account, createdBy, updatedBy }) => {
+  const Ledger = mongoose.model('Ledger');
+
+  const ledger = await Ledger.create({
+    entryDate: doc.date,
+    entryType: 'expense',
+    lines: [{
+      account: account._id,
+      transactionType: 'debit',
+      amount: doc.amount,
+      balanceAfter: account.balance
+    }],
+    description: `Expense: ${doc.title}`,
+    reference: doc.referenceNumber || doc._id.toString(),
+    referenceId: doc._id,
+    referenceModel: 'Expense',
+    category: doc.category,
+    college: doc.college,
+    notes: doc.notes,
+    createdBy,
+    updatedBy
+  });
+
+  if (!account.ledgers) account.ledgers = [];
+  if (!account.ledgers.some((id) => id.toString() === ledger._id.toString())) {
+    account.ledgers.push(ledger._id);
+    await account.save();
+  }
+
+  return ledger;
+};
+
+const deleteExpenseLedger = async ({ expenseId, account }) => {
+  const Ledger = mongoose.model('Ledger');
+  const ledger = await Ledger.findOneAndDelete({
+    referenceId: expenseId,
+    referenceModel: 'Expense'
+  });
+
+  if (ledger && account?.ledgers?.length) {
+    account.ledgers = account.ledgers.filter((id) => id.toString() !== ledger._id.toString());
+    await account.save();
+  }
+};
+
 // Store original values for update operations
 expenseSchema.pre('save', async function (next) {
   if (this.isNew) {
@@ -155,24 +200,11 @@ expenseSchema.post('save', async function (doc, next) {
       account.updatedBy = doc.createdBy;
       await account.save();
 
-      // Create ledger entry
-      await Ledger.create({
-        entryDate: doc.date,
-        entryType: 'expense',
-        lines: [{
-          account: account._id,
-          transactionType: 'debit',
-          amount: doc.amount,
-          balanceAfter: account.balance
-        }],
-        description: `Expense: ${doc.title}`,
-        reference: doc.referenceNumber || doc._id.toString(),
-        referenceId: doc._id,
-        referenceModel: 'Expense',
-        category: doc.category,
-        college: doc.college,
-        notes: doc.notes,
-        createdBy: doc.createdBy
+      await createExpenseLedger({
+        doc,
+        account,
+        createdBy: doc.createdBy,
+        updatedBy: doc.updatedBy
       });
     } else {
       // Update operation
@@ -191,11 +223,7 @@ expenseSchema.post('save', async function (doc, next) {
             account.updatedBy = doc.updatedBy || doc.createdBy;
             await account.save();
             
-            // Delete ledger entry
-            await Ledger.findOneAndDelete({
-              referenceId: doc._id,
-              referenceModel: 'Expense'
-            });
+            await deleteExpenseLedger({ expenseId: doc._id, account });
           }
         } else {
           // Expense was uncancelled - apply the transaction
@@ -205,23 +233,9 @@ expenseSchema.post('save', async function (doc, next) {
             account.updatedBy = doc.updatedBy || doc.createdBy;
             await account.save();
             
-            // Create ledger entry
-            await Ledger.create({
-              entryDate: doc.date,
-              entryType: 'expense',
-              lines: [{
-                account: account._id,
-                transactionType: 'debit',
-                amount: doc.amount,
-                balanceAfter: account.balance
-              }],
-              description: `Expense: ${doc.title}`,
-              reference: doc.referenceNumber || doc._id.toString(),
-              referenceId: doc._id,
-              referenceModel: 'Expense',
-              category: doc.category,
-              college: doc.college,
-              notes: doc.notes,
+            await createExpenseLedger({
+              doc,
+              account,
               createdBy: doc.createdBy,
               updatedBy: doc.updatedBy
             });
@@ -247,11 +261,7 @@ expenseSchema.post('save', async function (doc, next) {
             await oldAccountDoc.save();
           }
 
-          // Delete old ledger entry
-          await Ledger.findOneAndDelete({
-            referenceId: doc._id,
-            referenceModel: 'Expense'
-          });
+          await deleteExpenseLedger({ expenseId: doc._id, account: oldAccountDoc });
         }
 
         // Apply new transaction
@@ -261,23 +271,9 @@ expenseSchema.post('save', async function (doc, next) {
           account.updatedBy = doc.updatedBy || doc.createdBy;
           await account.save();
 
-          // Create new ledger entry
-          await Ledger.create({
-            entryDate: doc.date,
-            entryType: 'expense',
-            lines: [{
-              account: account._id,
-              transactionType: 'debit',
-              amount: doc.amount,
-              balanceAfter: account.balance
-            }],
-            description: `Expense: ${doc.title}`,
-            reference: doc.referenceNumber || doc._id.toString(),
-            referenceId: doc._id,
-            referenceModel: 'Expense',
-            category: doc.category,
-            college: doc.college,
-            notes: doc.notes,
+          await createExpenseLedger({
+            doc,
+            account,
             createdBy: doc.createdBy,
             updatedBy: doc.updatedBy
           });
@@ -295,6 +291,16 @@ expenseSchema.post('save', async function (doc, next) {
           ledger.notes = doc.notes;
           ledger.updatedBy = doc.updatedBy || doc.createdBy;
           await ledger.save();
+        } else {
+          const account = await Account.findById(doc.account);
+          if (account) {
+            await createExpenseLedger({
+              doc,
+              account,
+              createdBy: doc.createdBy,
+              updatedBy: doc.updatedBy
+            });
+          }
         }
       }
     }
@@ -310,7 +316,6 @@ expenseSchema.post('findOneAndDelete', async function (doc, next) {
   try {
     if (doc && !doc.isCancelled) {
       const Account = mongoose.model('Account');
-      const Ledger = mongoose.model('Ledger');
       
       // Revert account balance (add back the amount)
       const account = await Account.findById(doc.account);
@@ -320,11 +325,7 @@ expenseSchema.post('findOneAndDelete', async function (doc, next) {
         await account.save();
       }
 
-      // Delete ledger entry
-      await Ledger.findOneAndDelete({
-        referenceId: doc._id,
-        referenceModel: 'Expense'
-      });
+      await deleteExpenseLedger({ expenseId: doc._id, account });
     }
     
     //next();
@@ -337,7 +338,6 @@ expenseSchema.post('deleteOne', async function (doc, next) {
   try {
     if (doc && !doc.isCancelled) {
       const Account = mongoose.model('Account');
-      const Ledger = mongoose.model('Ledger');
       
       // Revert account balance (add back the amount)
       const account = await Account.findById(doc.account);
@@ -347,11 +347,7 @@ expenseSchema.post('deleteOne', async function (doc, next) {
         await account.save();
       }
 
-      // Delete ledger entry
-      await Ledger.findOneAndDelete({
-        referenceId: doc._id,
-        referenceModel: 'Expense'
-      });
+      await deleteExpenseLedger({ expenseId: doc._id, account });
     }
     
     //next();
@@ -365,7 +361,6 @@ expenseSchema.pre('remove', async function (next) {
   try {
     if (!this.isCancelled) {
       const Account = mongoose.model('Account');
-      const Ledger = mongoose.model('Ledger');
       
       // Revert account balance (add back the amount)
       const account = await Account.findById(this.account);
@@ -375,11 +370,7 @@ expenseSchema.pre('remove', async function (next) {
         await account.save();
       }
 
-      // Delete ledger entry
-      await Ledger.findOneAndDelete({
-        referenceId: this._id,
-        referenceModel: 'Expense'
-      });
+      await deleteExpenseLedger({ expenseId: this._id, account });
     }
     
     //next();
